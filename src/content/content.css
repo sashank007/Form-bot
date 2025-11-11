@@ -1,0 +1,71 @@
+/* Form Bot Content Script Styles */
+
+/* Field highlighting classes */
+.formbot-highlight {
+  outline: 2px solid #8B5CF6 !important;
+  outline-offset: 2px !important;
+  transition: outline 0.2s ease-in-out !important;
+  animation: formbot-pulse 2s ease-in-out infinite !important;
+}
+
+.formbot-highlight-success {
+  outline: 2px solid #10B981 !important;
+  outline-offset: 2px !important;
+  animation: formbot-success-pulse 1s ease-in-out !important;
+}
+
+.formbot-highlight-warning {
+  outline: 2px solid #F59E0B !important;
+  outline-offset: 2px !important;
+  animation: formbot-warning-pulse 1s ease-in-out !important;
+}
+
+/* Animations */
+@keyframes formbot-pulse {
+  0%, 100% {
+    outline-color: #8B5CF6;
+    outline-width: 2px;
+  }
+  50% {
+    outline-color: #A78BFA;
+    outline-width: 3px;
+  }
+}
+
+@keyframes formbot-success-pulse {
+  0% {
+    outline-color: #10B981;
+    outline-width: 2px;
+  }
+  50% {
+    outline-color: #34D399;
+    outline-width: 3px;
+  }
+  100% {
+    outline-color: #10B981;
+    outline-width: 2px;
+  }
+}
+
+@keyframes formbot-warning-pulse {
+  0% {
+    outline-color: #F59E0B;
+    outline-width: 2px;
+  }
+  50% {
+    outline-color: #FBBF24;
+    outline-width: 3px;
+  }
+  100% {
+    outline-color: #F59E0B;
+    outline-width: 2px;
+  }
+}
+
+/* Ensure content styles don't interfere with page styles */
+.formbot-highlight,
+.formbot-highlight-success,
+.formbot-highlight-warning {
+  box-sizing: border-box !important;
+}
+

@@ -1,0 +1,27 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Gradient Background -->
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#8B5CF6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#3B82F6;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Rounded square background -->
+  <rect width="128" height="128" rx="24" fill="url(#grad)"/>
+  
+  <!-- Document icon -->
+  <path d="M40 32C37.7909 32 36 33.7909 36 36V92C36 94.2091 37.7909 96 40 96H88C90.2091 96 92 94.2091 92 92V48L72 32H40Z" fill="white" opacity="0.9"/>
+  
+  <!-- Folded corner -->
+  <path d="M72 32V48H92L72 32Z" fill="white" opacity="0.6"/>
+  
+  <!-- Lines representing form fields -->
+  <rect x="44" y="56" width="40" height="4" rx="2" fill="#8B5CF6"/>
+  <rect x="44" y="66" width="32" height="4" rx="2" fill="#8B5CF6"/>
+  <rect x="44" y="76" width="36" height="4" rx="2" fill="#8B5CF6"/>
+  
+  <!-- Lightning bolt for automation -->
+  <path d="M68 82L62 90H66L64 98L70 90H66L68 82Z" fill="#F59E0B"/>
+</svg>
+
