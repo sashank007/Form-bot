@@ -114,12 +114,21 @@ const PrivacySettings: React.FC<PrivacySettingsProps> = ({ settings, onChange })
                 value={settings.openAIKey}
                 onChange={(e) => onChange({ openAIKey: e.target.value })}
                 className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-purple focus:border-transparent"
-                placeholder="sk-..."
+                placeholder="sk-proj-..."
               />
+              {settings.openAIKey && !settings.openAIKey.startsWith('sk-') && (
+                <p className="text-xs text-danger mt-2">
+                  ⚠️ Invalid key format. OpenAI keys start with "sk-"
+                </p>
+              )}
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                Your API key is stored locally and encrypted. Get one at{' '}
+                Your API key is stored locally. Get one at{' '}
                 <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-primary-purple hover:underline">
                   OpenAI Platform
+                </a>
+                {' • '}
+                <a href="https://platform.openai.com/account/billing" target="_blank" rel="noopener noreferrer" className="text-primary-purple hover:underline">
+                  Add Credits
                 </a>
               </p>
             </div>

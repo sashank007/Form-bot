@@ -71,6 +71,7 @@ export interface Settings {
 }
 
 export interface ExtractedProfileData {
+  // Standard fields
   firstName?: string;
   lastName?: string;
   fullName?: string;
@@ -86,10 +87,34 @@ export interface ExtractedProfileData {
   website?: string;
   linkedIn?: string;
   github?: string;
+  
+  // Rich content fields
   skills?: string;
   experience?: string;
   education?: string;
   summary?: string;
+  
+  // Custom/Extended fields (AI will extract anything it finds)
+  personalProjects?: string;
+  projects?: string;
+  certifications?: string;
+  languages?: string;
+  awards?: string;
+  publications?: string;
+  portfolio?: string;
+  hobbies?: string;
+  interests?: string;
+  volunteerWork?: string;
+  references?: string;
+  objectives?: string;
+  achievements?: string;
+  licenses?: string;
+  patents?: string;
+  conferences?: string;
+  speakingEngagements?: string;
+  professionalMemberships?: string;
+  
+  // Catch-all for any other fields AI extracts
   [key: string]: string | undefined;
 }
 

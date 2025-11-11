@@ -5,11 +5,12 @@
 import React, { useEffect, useState } from 'react';
 import DataManager from './components/DataManager';
 import PrivacySettings from './components/PrivacySettings';
+import ResumeProfile from './components/ResumeProfile';
 import { Settings } from '../types';
 import { getSettings, saveSettings } from '../utils/storage';
 
 const Options: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'data' | 'settings'>('data');
+  const [activeTab, setActiveTab] = useState<'data' | 'resume' | 'settings'>('data');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [darkMode, setDarkMode] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -97,6 +98,16 @@ const Options: React.FC = () => {
               Data Management
             </button>
             <button
+              onClick={() => setActiveTab('resume')}
+              className={`py-4 px-2 border-b-2 font-medium transition-colors ${
+                activeTab === 'resume'
+                  ? 'border-primary-purple text-primary-purple'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+              }`}
+            >
+              Resume Profile
+            </button>
+            <button
               onClick={() => setActiveTab('settings')}
               className={`py-4 px-2 border-b-2 font-medium transition-colors ${
                 activeTab === 'settings'
@@ -112,11 +123,9 @@ const Options: React.FC = () => {
 
       {/* Content */}
       <main className="max-w-6xl mx-auto px-6 py-8">
-        {activeTab === 'data' ? (
-          <DataManager />
-        ) : (
-          <PrivacySettings settings={settings} onChange={handleSettingsChange} />
-        )}
+        {activeTab === 'data' && <DataManager />}
+        {activeTab === 'resume' && <ResumeProfile settings={settings} onChange={handleSettingsChange} />}
+        {activeTab === 'settings' && <PrivacySettings settings={settings} onChange={handleSettingsChange} />}
       </main>
 
       {/* Footer */}

@@ -20,32 +20,42 @@ export async function extractProfileFromResume(resumeText: string): Promise<Extr
   }
 
   try {
-    const systemPrompt = `You are an expert at extracting structured data from resumes, LinkedIn profiles, and personal information text.
+    const systemPrompt = `You are an expert at extracting ALL structured data from resumes, LinkedIn profiles, and personal information.
 
-Extract all relevant information into a structured JSON format. Include any field you can find.
+CRITICAL: Extract EVERY piece of information you find. Create a field for ANYTHING mentioned.
 
-Common fields: firstName, lastName, email, phone, address, city, state, zipCode, country, company, jobTitle, website, linkedIn, github, skills, experience, education, summary
+Standard fields: firstName, lastName, fullName, email, phone, address, city, state, zipCode, country, company, jobTitle, website, linkedIn, github
 
-For skills/experience/education, extract the full text content.
-Return ONLY valid JSON, no explanations.`;
+Custom fields (extract if present): skills, experience, education, summary, certifications, languages, awards, publications, personalProjects, projects, portfolio, hobbies, interests, volunteerWork, references, objectives, achievements, licenses, patents, conferences, speakingEngagements, socialMedia, professionalMemberships, militaryService, securityClearance, etc.
 
-    const userPrompt = `Extract structured data from this resume/profile:
+Rules:
+- Create a camelCase field name for every distinct piece of info
+- For text sections (projects, experience), include full content
+- For lists (skills, languages), include complete lists
+- If you see a section heading, create a field for it
+- Be comprehensive - extract EVERYTHING
+
+Return ONLY valid JSON.`;
+
+    const userPrompt = `Extract ALL structured data from this resume/profile. Create a field for every piece of information:
 
 ${resumeText}
 
-Return JSON with all extracted fields. Example format:
+Return comprehensive JSON with ALL fields found. Include standard AND custom fields:
 {
-  "firstName": "John",
-  "lastName": "Doe",
-  "email": "john@example.com",
-  "phone": "555-123-4567",
-  "company": "Tech Corp",
-  "jobTitle": "Software Engineer",
-  "skills": "JavaScript, React, TypeScript...",
-  "experience": "5 years at Tech Corp...",
-  "summary": "Experienced software engineer...",
-  ...
-}`;
+  "firstName": "...",
+  "email": "...",
+  "skills": "full list",
+  "experience": "full work history text",
+  "personalProjects": "full project descriptions",
+  "certifications": "list of certifications",
+  "languages": "languages spoken",
+  "portfolio": "portfolio URL",
+  "achievements": "notable achievements",
+  ...any other field you find...
+}
+
+Extract EVERYTHING - be thorough!`;
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -66,7 +76,17 @@ Return JSON with all extracted fields. Example format:
     });
 
     if (!response.ok) {
-      throw new Error(`OpenAI API failed: ${response.status}`);
+      const errorData = await response.json().catch(() => ({}));
+      
+      if (response.status === 401) {
+        throw new Error('Invalid API key. Please check your OpenAI API key in settings.');
+      } else if (response.status === 429) {
+        throw new Error('Rate limit exceeded. Please try again in a moment.');
+      } else if (response.status === 402) {
+        throw new Error('Insufficient credits. Please add credits to your OpenAI account.');
+      } else {
+        throw new Error(`OpenAI API failed: ${errorData.error?.message || response.statusText}`);
+      }
     }
 
     const data = await response.json();
@@ -80,7 +100,7 @@ Return JSON with all extracted fields. Example format:
     return extracted;
   } catch (error) {
     console.error('Resume extraction failed:', error);
-    return null;
+    throw error; // Re-throw to show user-friendly message
   }
 }
 
@@ -108,32 +128,48 @@ export async function fillFormFromProfile(
   }
 
   try {
-    const systemPrompt = `You are an expert at filling out forms intelligently.
-Given form fields and a user's profile data, determine the best value for each field.
+    const systemPrompt = `You are an expert at filling out forms intelligently using profile/resume data.
+
+Given form fields and extracted profile data, determine the BEST value for each field.
 
 Rules:
-- Match semantically, not just by field names
-- Consider context, labels, and field types
-- For open-ended questions, use summary/experience/education data
-- For specific fields, use exact profile values
-- If no good data exists for a field, return null for that field
+- Match semantically and contextually, not just by field names
+- For specific fields (name, email, phone): use exact values
+- For descriptive fields (projects, experience): extract relevant sections from profile
+- For questions ("Why?", "Tell us about..."): craft appropriate answers from profile data
+- Match "personal projects" to personalProjects, projects, or portfolio fields
+- Match "certifications" to certifications field
+- Be intelligent about partial matches (e.g., "your projects" → personalProjects)
+- If multiple profile fields could work, choose the most relevant
+- If no data exists, return null
 
-Return ONLY valid JSON array.`;
+Return ONLY valid JSON.`;
 
-    const userPrompt = `Form fields:
-${fields.map((f, i) => `${i}. Label: "${f.label}" | Name: "${f.name}" | Type: "${f.type}" | Placeholder: "${f.placeholder}"`).join('\n')}
+    const userPrompt = `Form fields to fill:
+${fields.map((f, i) => `${i}. Label: "${f.label}" | Name: "${f.name}" | Type: "${f.type}" | Placeholder: "${f.placeholder}" | Aria: "${f.ariaLabel}"`).join('\n')}
 
-User profile data:
+Available profile data:
 ${JSON.stringify(profileData, null, 2)}
 
-For each field, determine what value to fill. Return JSON array:
-[
-  {
-    "fieldIndex": 0,
-    "fillValue": "actual value from profile" or null,
-    "dataSource": "which profile field was used"
-  }
-]`;
+For EACH field, determine the best fill value from the profile. Match intelligently:
+- "Personal projects" field → use personalProjects or projects data
+- "Tell us about yourself" → use summary or experience
+- "Skills" → use skills field
+- "Why this company?" → craft from experience/summary
+- etc.
+
+Return JSON:
+{
+  "mappings": [
+    {
+      "fieldIndex": 0,
+      "fillValue": "actual value from profile or crafted answer" or null,
+      "dataSource": "which profile field(s) were used"
+    }
+  ]
+}
+
+Be thorough - try to fill every field!`;
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
