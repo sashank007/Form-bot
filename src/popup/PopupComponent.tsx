@@ -221,14 +221,21 @@ const Popup: React.FC = () => {
       return;
     }
 
+    // Get secrets for this profile
+    const { getProfileSecrets } = await import('../utils/secretsStorage');
+    const profileSecrets = await getProfileSecrets(profileId);
+    
+    // Merge regular data and secrets (secrets take priority)
+    const mergedData = { ...profile.data, ...profileSecrets };
+
     // Only validate data that will actually be filled
     const dataToValidate: { [key: string]: string } = {};
     const fieldTypes: { [key: string]: string } = {};
     
     formData.fields.forEach(f => {
-      if (f.matchedKey && profile.data[f.matchedKey]) {
+      if (f.matchedKey && mergedData[f.matchedKey]) {
         // Only include fields that are matched and will be filled
-        dataToValidate[f.matchedKey] = profile.data[f.matchedKey];
+        dataToValidate[f.matchedKey] = mergedData[f.matchedKey];
         fieldTypes[f.matchedKey] = f.fieldType;
       }
     });

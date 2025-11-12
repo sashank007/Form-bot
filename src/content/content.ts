@@ -5,13 +5,15 @@
 import { Message, DetectedField, FormDetectionResult, FormTemplate } from '../types';
 import { detectFormFields, countForms, observeFormChanges, getElementByXPath, highlightField, removeHighlight, removeAllHighlights } from './formDetector';
 import { matchFields, getFillValue } from './fieldMatcher';
-import { getPrimaryFormData, saveLastFill, getLastFill, getSettings } from '../utils/storage';
+import { getPrimaryFormData, saveLastFill, getLastFill, getSettings, getFormDataById } from '../utils/storage';
 import { setupInlineButtons, removeAllInlineButtons } from './inlineButton';
 import { analyzeFieldsWithAI } from '../utils/aiFormAnalyzer';
 import { extractProfileFromResume, fillFormFromProfile } from '../utils/resumeExtractor';
 import { hideFieldEditor } from './fieldEditor';
 import { startFormMonitoring, calculateFillPercentage, getCurrentFormValues, getFieldStructure } from './formMonitor';
-import { findMatchingTemplates, saveTemplate, incrementTemplateUsage } from '../utils/templateStorage';
+import { findMatchingTemplates, saveTemplate, incrementTemplateUsage, getTemplateById } from '../utils/templateStorage';
+import { getProfileSecrets } from '../utils/secretsStorage';
+import { validateFormData } from '../utils/validator';
 
 let detectedFields: DetectedField[] = [];
 let formObserver: MutationObserver | null = null;
@@ -203,35 +205,62 @@ async function handleMessage(message: Message, sendResponse: (response?: any) =>
  * Fill form with saved data
  */
 async function fillForm(options: { minConfidence?: number; highlight?: boolean; profileId?: string } = {}) {
+  console.log('Content: fillForm called with options:', options);
+  console.log('Content: detectedFields count:', detectedFields.length);
+  
   const settings = await getSettings();
   const minConfidence = options.minConfidence ?? settings.minConfidence;
   const shouldHighlight = options.highlight ?? settings.highlightFields;
   
   // Get data from selected profile or primary
   let savedData;
+  let profileSecrets: { [key: string]: string } = {};
+  
   if (options.profileId) {
-    const { getFormDataById } = await import('../utils/storage');
     const profile = await getFormDataById(options.profileId);
     savedData = profile?.data || {};
+    
+    console.log('Content: Using profile:', profile?.name, 'Data keys:', Object.keys(savedData));
+    
+    // Get encrypted secrets for this profile
+    profileSecrets = await getProfileSecrets(options.profileId);
+    
+    console.log('Content: Profile has', Object.keys(profileSecrets).length, 'secrets');
   } else {
     savedData = await getPrimaryFormData();
+    console.log('Content: Using primary data, keys:', Object.keys(savedData));
   }
+  
+  // Merge secrets with regular data (secrets take priority)
+  const mergedData = { ...savedData, ...profileSecrets };
+  
   const previousValues: Array<{ xpath: string; value: string }> = [];
   
   removeAllHighlights();
   
+  let filledCount = 0;
+  let skippedCount = 0;
+  
+  console.log('Content: Starting to fill fields...');
+  
   for (const detectedField of detectedFields) {
     // Skip low confidence matches
     if (detectedField.confidence < minConfidence) {
+      console.log('Content: Skipping low confidence field:', detectedField.field.label, detectedField.confidence);
+      skippedCount++;
       continue;
     }
     
     // Skip password fields
     if (detectedField.fieldType === 'password') {
+      console.log('Content: Skipping password field');
+      skippedCount++;
       continue;
     }
     
     if (!detectedField.matchedKey) {
+      console.log('Content: Skipping field with no match:', detectedField.field.label);
+      skippedCount++;
       continue;
     }
     
@@ -239,12 +268,16 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
       detectedField.field,
       detectedField.fieldType,
       detectedField.matchedKey,
-      savedData
+      mergedData
     );
     
     if (!fillValue) {
+      console.log('Content: No fill value for:', detectedField.matchedKey);
+      skippedCount++;
       continue;
     }
+    
+    console.log('Content: Filling field:', detectedField.field.label || detectedField.field.name, 'with key:', detectedField.matchedKey);
     
     const element = detectedField.field.element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement;
     
@@ -283,7 +316,11 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
         removeHighlight(element);
       }, 2000);
     }
+    
+    filledCount++;
   }
+  
+  console.log(`Content: Fill complete - ${filledCount} filled, ${skippedCount} skipped`);
   
   // Save state for undo
   await saveLastFill(previousValues);
@@ -321,7 +358,6 @@ async function rematchWithProfile(profileId: string) {
   if (!profileId) return;
   
   // Get the selected profile data
-  const { getFormDataById } = await import('../utils/storage');
   const profile = await getFormDataById(profileId);
   
   if (!profile) return;
@@ -347,25 +383,53 @@ async function rematchWithProfile(profileId: string) {
  * Fill a single field from popup click
  */
 async function fillSingleFieldFromMessage(payload: any) {
+  console.log('Content: fillSingleFieldFromMessage called with:', payload);
+  
   const { xpath, matchedKey, fieldType, profileId } = payload;
   
-  if (!matchedKey) return;
+  if (!matchedKey) {
+    console.error('Content: No matchedKey provided');
+    return;
+  }
   
-  // Get data from selected profile
+  // Get data from selected profile (including secrets)
   let savedData;
+  let profileSecrets: { [key: string]: string } = {};
+  
   if (profileId) {
-    const { getFormDataById } = await import('../utils/storage');
     const profile = await getFormDataById(profileId);
     savedData = profile?.data || {};
+    
+    console.log('Content: Profile data:', Object.keys(savedData));
+    
+    // Get encrypted secrets
+    profileSecrets = await getProfileSecrets(profileId);
+    
+    console.log('Content: Profile secrets:', Object.keys(profileSecrets));
   } else {
     savedData = await getPrimaryFormData();
   }
   
-  const fillValue = savedData[matchedKey];
-  if (!fillValue) return;
+  // Merge secrets with regular data (secrets take priority)
+  const mergedData = { ...savedData, ...profileSecrets };
+  
+  const fillValue = mergedData[matchedKey];
+  
+  if (!fillValue) {
+    console.error('Content: No value found for key:', matchedKey, 'Available keys:', Object.keys(mergedData));
+    return;
+  }
+  
+  console.log('Content: Found fill value for', matchedKey, '- length:', fillValue.length);
   
   const element = getElementByXPath(xpath) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement | null;
-  if (!element) return;
+  
+  if (!element) {
+    console.error('Content: Element not found for xpath:', xpath);
+    return;
+  }
+  
+  console.log('Content: Filling element:', element.tagName, element.id || element.getAttribute('name'));
   
   // Fill the field
   if ('value' in element) {
@@ -390,6 +454,8 @@ async function fillSingleFieldFromMessage(payload: any) {
   setTimeout(() => {
     element.classList.remove('formbot-highlight-success');
   }, 2000);
+  
+  console.log('Content: Field filled successfully');
 }
 
 /**
@@ -475,7 +541,6 @@ async function saveCurrentFormAsTemplate(payload: { name: string; profileId: str
  * Apply a saved template to current form
  */
 async function applyTemplate(templateId: string) {
-  const { getTemplateById } = await import('../utils/templateStorage');
   const template = await getTemplateById(templateId);
   
   if (!template) {
@@ -487,7 +552,6 @@ async function applyTemplate(templateId: string) {
   
   try {
     // Get profile data
-    const { getFormDataById } = await import('../utils/storage');
     const profile = await getFormDataById(template.linkedProfileId);
     
     if (!profile) {
@@ -614,7 +678,6 @@ async function handleFormSubmit(event: Event) {
   }
   
   // Validate the form data
-  const { validateFormData } = await import('../utils/validator');
   const validation = await validateFormData(filledData, fieldTypes, window.location.href);
   
   if (!validation.isValid) {

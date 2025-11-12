@@ -34,18 +34,34 @@ const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence, select
   const handleFillField = async (field: DetectedField) => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     
-    if (!tab.id) return;
+    if (!tab.id) {
+      console.error('No active tab');
+      return;
+    }
 
-    // Send message to fill just this field
-    await chrome.tabs.sendMessage(tab.id, {
-      type: 'FILL_SINGLE_FIELD',
-      payload: {
-        xpath: field.field.xpath,
-        matchedKey: field.matchedKey,
-        fieldType: field.fieldType,
-        profileId: selectedProfileId,
-      },
+    console.log('FormPreview: Filling field:', {
+      label: field.field.label,
+      matchedKey: field.matchedKey,
+      profileId: selectedProfileId,
     });
+
+    try {
+      // Send message to fill just this field
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        type: 'FILL_SINGLE_FIELD',
+        payload: {
+          xpath: field.field.xpath,
+          matchedKey: field.matchedKey,
+          fieldType: field.fieldType,
+          profileId: selectedProfileId,
+        },
+      });
+      
+      console.log('FormPreview: Fill response:', response);
+    } catch (error) {
+      console.error('FormPreview: Failed to fill field:', error);
+      alert('Failed to fill field. Please try again or use "Fill All Fields"');
+    }
   };
 
   return (

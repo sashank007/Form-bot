@@ -1,25 +1,43 @@
 /**
- * Secrets Manager - Encrypted storage for sensitive data
+ * Secrets Manager - Profile-based encrypted storage for sensitive data
  */
 
 import React, { useEffect, useState } from 'react';
-import { Secret } from '../../utils/secretsStorage';
-import { getAllSecrets, saveSecret, deleteSecret } from '../../utils/secretsStorage';
+import { Secret, getProfileSecretsArray, saveSecretToProfile, deleteSecretFromProfile } from '../../utils/secretsStorage';
+import { getAllFormData } from '../../utils/storage';
+import { SavedFormData } from '../../types';
 
 const SecretsManager: React.FC = () => {
+  const [profiles, setProfiles] = useState<SavedFormData[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState<string>('');
   const [secrets, setSecrets] = useState<Secret[]>([]);
   const [showAddForm, setShowAddForm] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState<string | null>(null);
   const [secretName, setSecretName] = useState('');
   const [secretValue, setSecretValue] = useState('');
   const [showValues, setShowValues] = useState<{ [key: string]: boolean }>({});
 
   useEffect(() => {
-    loadSecrets();
+    loadProfiles();
   }, []);
 
+  useEffect(() => {
+    if (selectedProfileId) {
+      loadSecrets();
+    }
+  }, [selectedProfileId]);
+
+  const loadProfiles = async () => {
+    const data = await getAllFormData();
+    setProfiles(data);
+    if (data.length > 0 && !selectedProfileId) {
+      setSelectedProfileId(data[0].id);
+    }
+  };
+
   const loadSecrets = async () => {
-    const data = await getAllSecrets();
+    if (!selectedProfileId) return;
+    const data = await getProfileSecretsArray(selectedProfileId);
     setSecrets(data);
   };
 
@@ -29,40 +47,37 @@ const SecretsManager: React.FC = () => {
       return;
     }
 
-    const secret: Secret = {
-      id: editingId || `secret_${Date.now()}`,
-      name: secretName,
-      value: secretValue,
-      createdAt: editingId ? secrets.find(s => s.id === editingId)?.createdAt || Date.now() : Date.now(),
-      updatedAt: Date.now(),
-    };
+    if (!selectedProfileId) {
+      alert('Please select a profile first');
+      return;
+    }
 
-    await saveSecret(secret);
+    await saveSecretToProfile(selectedProfileId, secretName, secretValue);
     
     setShowAddForm(false);
-    setEditingId(null);
+    setEditingName(null);
     setSecretName('');
     setSecretValue('');
     loadSecrets();
   };
 
   const handleEdit = (secret: Secret) => {
-    setEditingId(secret.id);
+    setEditingName(secret.name);
     setSecretName(secret.name);
     setSecretValue(secret.value);
     setShowAddForm(true);
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (name: string) => {
     if (confirm('Delete this secret? This cannot be undone.')) {
-      await deleteSecret(id);
+      await deleteSecretFromProfile(selectedProfileId, name);
       loadSecrets();
     }
   };
 
   const handleCancel = () => {
     setShowAddForm(false);
-    setEditingId(null);
+    setEditingName(null);
     setSecretName('');
     setSecretValue('');
   };
@@ -81,16 +96,43 @@ const SecretsManager: React.FC = () => {
         <div>
           <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Secrets Vault</h2>
           <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-            Encrypted storage for sensitive credentials (passwords, API keys, SSN, etc.)
+            Profile-based encrypted storage for sensitive credentials
           </p>
         </div>
-        <button onClick={() => setShowAddForm(true)} className="btn-primary">
+        <button 
+          onClick={() => setShowAddForm(true)} 
+          className="btn-primary"
+          disabled={!selectedProfileId}
+        >
           <svg className="w-4 h-4 inline-block mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
           Add Secret
         </button>
       </div>
+
+      {/* Profile Selector */}
+      {profiles.length > 0 && (
+        <div className="bg-white dark:bg-gray-800 rounded-card shadow p-4">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            Select Profile to Manage Secrets:
+          </label>
+          <select
+            value={selectedProfileId}
+            onChange={(e) => setSelectedProfileId(e.target.value)}
+            className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-purple focus:border-transparent"
+          >
+            {profiles.map(profile => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+            Secrets are stored separately for each profile
+          </p>
+        </div>
+      )}
 
       {/* Security Notice */}
       <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-4">
@@ -114,7 +156,10 @@ const SecretsManager: React.FC = () => {
       {showAddForm && (
         <div className="bg-white dark:bg-gray-800 rounded-card shadow-lg p-6 border-2 border-primary-purple">
           <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">
-            {editingId ? 'Edit Secret' : 'Add New Secret'}
+            {editingName ? 'Edit Secret' : 'Add New Secret'}
+            <span className="text-sm font-normal text-gray-600 dark:text-gray-400 ml-2">
+              for {profiles.find(p => p.id === selectedProfileId)?.name}
+            </span>
           </h3>
           
           <div className="space-y-4">
@@ -149,12 +194,15 @@ const SecretsManager: React.FC = () => {
             
             <div className="flex gap-2">
               <button onClick={handleSave} className="flex-1 btn-primary">
-                {editingId ? 'Update' : 'Save'} Secret
+                {editingName ? 'Update' : 'Save'} Secret
               </button>
               <button onClick={handleCancel} className="flex-1 btn-secondary">
                 Cancel
               </button>
             </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 text-center">
+              Secret will be encrypted and stored in "{profiles.find(p => p.id === selectedProfileId)?.name}" profile
+            </p>
           </div>
         </div>
       )}
@@ -174,7 +222,7 @@ const SecretsManager: React.FC = () => {
         )}
 
         {secrets.map(secret => (
-          <div key={secret.id} className="bg-white dark:bg-gray-800 rounded-card shadow p-4 hover:shadow-lg transition-shadow">
+          <div key={secret.name} className="bg-white dark:bg-gray-800 rounded-card shadow p-4 hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between">
               <div className="flex-1">
                 <div className="flex items-center gap-2">
@@ -186,19 +234,15 @@ const SecretsManager: React.FC = () => {
                 
                 <div className="mt-2 flex items-center gap-3">
                   <code className="text-sm bg-gray-100 dark:bg-gray-700 px-3 py-1 rounded font-mono text-gray-900 dark:text-gray-100">
-                    {showValues[secret.id] ? secret.value : maskValue(secret.value)}
+                    {showValues[secret.name] ? secret.value : maskValue(secret.value)}
                   </code>
                   <button
-                    onClick={() => toggleShowValue(secret.id)}
+                    onClick={() => toggleShowValue(secret.name)}
                     className="text-xs text-primary-purple hover:text-primary-blue font-medium"
                   >
-                    {showValues[secret.id] ? 'Hide' : 'Show'}
+                    {showValues[secret.name] ? 'Hide' : 'Show'}
                   </button>
                 </div>
-                
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                  Last updated: {new Date(secret.updatedAt).toLocaleString()}
-                </p>
               </div>
               
               <div className="flex gap-2 ml-4">
@@ -212,7 +256,7 @@ const SecretsManager: React.FC = () => {
                   </svg>
                 </button>
                 <button
-                  onClick={() => handleDelete(secret.id)}
+                  onClick={() => handleDelete(secret.name)}
                   className="p-2 text-danger hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
                   title="Delete"
                 >
@@ -227,14 +271,15 @@ const SecretsManager: React.FC = () => {
       </div>
 
       {/* Usage Instructions */}
-      {secrets.length > 0 && (
+      {selectedProfileId && (
         <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-          <h4 className="font-semibold text-blue-900 dark:text-blue-100 mb-2">💡 How to Use Secrets</h4>
+          <h4 className="font-semibold text-blue-900 dark:text-blue-100 mb-2">💡 How Secrets Work</h4>
           <ul className="text-sm text-blue-800 dark:text-blue-200 space-y-1">
-            <li>• Secrets are stored with AES-256 encryption</li>
-            <li>• Use secret names in forms (e.g., if secret is "GitHub Token", create a field called "githubToken" in your profile)</li>
-            <li>• Secret values automatically fill when field names match</li>
-            <li>• Best for: Passwords, API keys, SSN, credit cards, security answers</li>
+            <li>• Each profile has its own encrypted secrets vault</li>
+            <li>• Secrets are AES-256 encrypted and stored locally</li>
+            <li>• When filling with "{profiles.find(p => p.id === selectedProfileId)?.name}", its secrets are automatically used</li>
+            <li>• Perfect for: Passwords, API keys, SSN, security answers, credit cards</li>
+            <li>• Secrets override regular profile data (more secure)</li>
           </ul>
         </div>
       )}

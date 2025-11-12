@@ -1,87 +1,85 @@
 /**
- * Encrypted secrets storage for sensitive data
+ * Profile-based encrypted secrets storage
  */
 
 import { encrypt, decrypt, getDeviceKey } from './encryption';
-
-const STORAGE_KEY = 'formbot_secrets';
+import { getFormDataById, saveFormData } from './storage';
 
 export interface Secret {
-  id: string;
   name: string;
   value: string;
-  createdAt: number;
-  updatedAt: number;
 }
 
 /**
- * Save a secret (encrypted)
+ * Save secrets for a profile (encrypted)
  */
-export async function saveSecret(secret: Secret): Promise<void> {
-  const allSecrets = await getAllSecrets();
-  const existingIndex = allSecrets.findIndex(s => s.id === secret.id);
-  
-  if (existingIndex >= 0) {
-    allSecrets[existingIndex] = secret;
-  } else {
-    allSecrets.push(secret);
+export async function saveProfileSecrets(profileId: string, secrets: { [key: string]: string }): Promise<void> {
+  const profile = await getFormDataById(profileId);
+  if (!profile) {
+    throw new Error('Profile not found');
   }
-  
+
+  // Encrypt secrets
   const deviceKey = await getDeviceKey();
-  const encrypted = await encrypt(JSON.stringify(allSecrets), deviceKey);
-  
-  await chrome.storage.local.set({ [STORAGE_KEY]: encrypted });
+  const secretsJson = JSON.stringify(secrets);
+  const encrypted = await encrypt(secretsJson, deviceKey);
+
+  // Save encrypted secrets to profile
+  profile.secrets = { _encrypted: encrypted };
+  await saveFormData(profile);
 }
 
 /**
- * Get all secrets (decrypted)
+ * Get secrets for a profile (decrypted)
  */
-export async function getAllSecrets(): Promise<Secret[]> {
+export async function getProfileSecrets(profileId: string): Promise<{ [key: string]: string }> {
   try {
-    const result = await chrome.storage.local.get(STORAGE_KEY);
-    const encrypted = result[STORAGE_KEY];
-    
-    if (!encrypted) {
-      return [];
+    const profile = await getFormDataById(profileId);
+    if (!profile || !profile.secrets) {
+      return {};
     }
-    
+
+    const encrypted = (profile.secrets as any)._encrypted;
+    if (!encrypted) {
+      return {};
+    }
+
     const deviceKey = await getDeviceKey();
     const decrypted = await decrypt(encrypted, deviceKey);
-    
+
     return JSON.parse(decrypted);
   } catch (error) {
-    console.error('Failed to get secrets:', error);
-    return [];
+    console.error('Failed to get profile secrets:', error);
+    return {};
   }
 }
 
 /**
- * Get a secret by ID
+ * Add or update a secret for a profile
  */
-export async function getSecretById(id: string): Promise<Secret | null> {
-  const secrets = await getAllSecrets();
-  return secrets.find(s => s.id === id) || null;
+export async function saveSecretToProfile(profileId: string, name: string, value: string): Promise<void> {
+  const secrets = await getProfileSecrets(profileId);
+  secrets[name] = value;
+  await saveProfileSecrets(profileId, secrets);
 }
 
 /**
- * Delete a secret
+ * Delete a secret from a profile
  */
-export async function deleteSecret(id: string): Promise<void> {
-  const secrets = await getAllSecrets();
-  const filtered = secrets.filter(s => s.id !== id);
-  
-  const deviceKey = await getDeviceKey();
-  const encrypted = await encrypt(JSON.stringify(filtered), deviceKey);
-  
-  await chrome.storage.local.set({ [STORAGE_KEY]: encrypted });
+export async function deleteSecretFromProfile(profileId: string, name: string): Promise<void> {
+  const secrets = await getProfileSecrets(profileId);
+  delete secrets[name];
+  await saveProfileSecrets(profileId, secrets);
 }
 
 /**
- * Get secret value by name (for form filling)
+ * Get all secrets as array for UI display
  */
-export async function getSecretValue(name: string): Promise<string | null> {
-  const secrets = await getAllSecrets();
-  const secret = secrets.find(s => s.name.toLowerCase() === name.toLowerCase());
-  return secret?.value || null;
+export async function getProfileSecretsArray(profileId: string): Promise<Secret[]> {
+  const secrets = await getProfileSecrets(profileId);
+  return Object.entries(secrets).map(([name, value]) => ({
+    name,
+    value,
+  }));
 }
 

@@ -26,6 +26,7 @@ export interface SavedFormData {
   id: string;
   name: string;
   data: FormData;
+  secrets?: { [key: string]: string }; // Encrypted secrets for this profile
   createdAt: number;
   updatedAt: number;
 }
