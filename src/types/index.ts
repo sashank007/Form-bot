@@ -30,6 +30,25 @@ export interface SavedFormData {
   updatedAt: number;
 }
 
+export interface FormTemplate {
+  id: string;
+  name: string;
+  urlPattern: string;
+  linkedProfileId: string;
+  fieldMappings: TemplateFieldMapping[];
+  fieldStructure: string[]; // Field names/labels for similarity matching
+  createdAt: number;
+  updatedAt: number;
+  usageCount: number;
+}
+
+export interface TemplateFieldMapping {
+  fieldName: string;
+  fieldLabel: string;
+  dataKey: string;
+  customValue?: string;
+}
+
 export interface FieldMapping {
   [key: string]: string[]; // e.g., "email": ["email", "e-mail", "contact-email", "user_email"]
 }
@@ -126,13 +145,18 @@ export interface Message {
 export type MessageType =
   | 'FORM_DETECTED'
   | 'FILL_FORM'
+  | 'FILL_SINGLE_FIELD'
   | 'FILL_FROM_RESUME'
   | 'GET_FORM_DATA'
+  | 'REMATCH_FIELDS'
   | 'SAVE_FORM_DATA'
   | 'GET_SETTINGS'
   | 'UPDATE_SETTINGS'
   | 'HIGHLIGHT_FIELD'
-  | 'UNDO_FILL';
+  | 'UNDO_FILL'
+  | 'GET_FILL_STATUS'
+  | 'SAVE_TEMPLATE'
+  | 'APPLY_TEMPLATE';
 
 export interface FormDetectionResult {
   fields: DetectedField[];

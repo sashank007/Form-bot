@@ -8,6 +8,7 @@ const STORAGE_KEYS = {
   FORM_DATA: 'formbot_data',
   SETTINGS: 'formbot_settings',
   LAST_FILL: 'formbot_last_fill',
+  SELECTED_PROFILE: 'formbot_selected_profile',
 };
 
 const DEFAULT_SETTINGS: Settings = {
@@ -129,6 +130,21 @@ export async function getLastFill(): Promise<Array<{ xpath: string; value: strin
  */
 export async function clearLastFill(): Promise<void> {
   await chrome.storage.local.remove(STORAGE_KEYS.LAST_FILL);
+}
+
+/**
+ * Save selected profile ID
+ */
+export async function saveSelectedProfile(profileId: string): Promise<void> {
+  await chrome.storage.local.set({ [STORAGE_KEYS.SELECTED_PROFILE]: profileId });
+}
+
+/**
+ * Get selected profile ID
+ */
+export async function getSelectedProfile(): Promise<string | null> {
+  const result = await chrome.storage.local.get(STORAGE_KEYS.SELECTED_PROFILE);
+  return result[STORAGE_KEYS.SELECTED_PROFILE] || null;
 }
 
 /**

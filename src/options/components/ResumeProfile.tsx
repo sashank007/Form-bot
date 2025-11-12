@@ -47,11 +47,25 @@ const ResumeProfile: React.FC<ResumeProfileProps> = ({ settings, onChange }) => 
       
       for (const [key, value] of Object.entries(extractedData)) {
         if (value) {
+          // Skip empty arrays
+          if (Array.isArray(value) && value.length === 0) {
+            continue;
+          }
+          
+          // Skip empty objects
+          if (typeof value === 'object' && Object.keys(value).length === 0) {
+            continue;
+          }
+          
           // Convert objects/arrays to strings
           if (typeof value === 'object') {
             flattenedData[key] = JSON.stringify(value, null, 2);
           } else {
-            flattenedData[key] = String(value);
+            const stringValue = String(value).trim();
+            // Only add if not empty
+            if (stringValue.length > 0) {
+              flattenedData[key] = stringValue;
+            }
           }
         }
       }

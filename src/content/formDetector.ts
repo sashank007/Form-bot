@@ -217,6 +217,15 @@ function shouldIncludeInput(input: HTMLInputElement | HTMLTextAreaElement | HTML
     return false;
   }
   
+  // Exclude Form Bot's own elements
+  if (input.id && input.id.startsWith('formbot-')) {
+    return false;
+  }
+  
+  if (input.closest('#formbot-field-editor') || input.closest('#formbot-loading-overlay')) {
+    return false;
+  }
+  
   // Must be visible
   if (!isElementVisible(input as HTMLElement)) {
     return false;
@@ -234,6 +243,15 @@ function shouldIncludeInput(input: HTMLInputElement | HTMLTextAreaElement | HTML
  * Check if a contenteditable element should be included
  */
 function shouldIncludeContentEditable(element: HTMLElement): boolean {
+  // Exclude Form Bot's own elements
+  if (element.id && element.id.startsWith('formbot-')) {
+    return false;
+  }
+  
+  if (element.closest('#formbot-field-editor') || element.closest('#formbot-loading-overlay')) {
+    return false;
+  }
+  
   // Must be visible
   if (!isElementVisible(element)) {
     return false;

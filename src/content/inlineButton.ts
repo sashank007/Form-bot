@@ -5,6 +5,7 @@
 import { DetectedField } from '../types';
 import { getFillValue } from './fieldMatcher';
 import { getPrimaryFormData } from '../utils/storage';
+import { showFieldEditor, isComplexValue } from './fieldEditor';
 
 const BUTTON_ID_PREFIX = 'formbot-inline-btn-';
 const BUTTON_CLASS = 'formbot-inline-button';
@@ -171,11 +172,38 @@ async function fillSingleField(detectedField: DetectedField, button: HTMLButtonE
   
   const element = detectedField.field.element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement;
   
+  // Check if value is complex (needs editing)
+  if (isComplexValue(fillValue)) {
+    // Show editor for user to customize
+    showFieldEditor({
+      fieldElement: element,
+      suggestedValue: fillValue,
+      fieldLabel: detectedField.field.label || detectedField.field.name || 'Field',
+      onConfirm: (editedValue) => {
+        performFill(element, editedValue);
+        showFillSuccess(button);
+      },
+      onCancel: () => {
+        // User cancelled, do nothing
+      },
+    });
+    return;
+  }
+  
+  // Simple value - fill directly
+  performFill(element, fillValue);
+  showFillSuccess(button);
+}
+
+/**
+ * Perform the actual fill operation
+ */
+function performFill(element: HTMLElement, value: string) {
   // Fill the field
   if ('value' in element) {
-    (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value = fillValue;
+    (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value = value;
   } else if ((element as HTMLElement).isContentEditable) {
-    (element as HTMLElement).textContent = fillValue;
+    (element as HTMLElement).textContent = value;
   }
   
   // Trigger events
@@ -186,9 +214,6 @@ async function fillSingleField(detectedField: DetectedField, button: HTMLButtonE
     element.dispatchEvent(new Event('keyup', { bubbles: true }));
     element.dispatchEvent(new Event('blur', { bubbles: true }));
   }
-  
-  // Visual feedback
-  showFillSuccess(button);
   
   // Add highlight to field
   element.classList.add('formbot-highlight-success');

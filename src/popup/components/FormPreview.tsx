@@ -2,7 +2,7 @@
  * Form Preview Component - Shows detected fields
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { DetectedField } from '../../types';
 import ConfidenceBadge from './ConfidenceBadge';
 import { getConfidenceLevel } from '../../utils/fieldClassifier';
@@ -10,12 +10,15 @@ import { getConfidenceLevel } from '../../utils/fieldClassifier';
 interface FormPreviewProps {
   fields: DetectedField[];
   minConfidence: number;
+  selectedProfileId?: string;
 }
 
-const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence }) => {
-  const displayFields = fields
-    .filter(f => f.fieldType !== 'password')
-    .slice(0, 5); // Show max 5 fields
+const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence, selectedProfileId }) => {
+  const [showAll, setShowAll] = useState(false);
+  
+  const filteredFields = fields.filter(f => f.fieldType !== 'password');
+  const displayFields = showAll ? filteredFields : filteredFields.slice(0, 5);
+  const hasMore = filteredFields.length > 5;
 
   const handleHighlight = async (xpath: string) => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -25,6 +28,23 @@ const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence }) => {
     await chrome.tabs.sendMessage(tab.id, {
       type: 'HIGHLIGHT_FIELD',
       payload: xpath,
+    });
+  };
+
+  const handleFillField = async (field: DetectedField) => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    
+    if (!tab.id) return;
+
+    // Send message to fill just this field
+    await chrome.tabs.sendMessage(tab.id, {
+      type: 'FILL_SINGLE_FIELD',
+      payload: {
+        xpath: field.field.xpath,
+        matchedKey: field.matchedKey,
+        fieldType: field.fieldType,
+        profileId: selectedProfileId,
+      },
     });
   };
 
@@ -41,8 +61,18 @@ const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence }) => {
           return (
             <div
               key={index}
-              onClick={() => handleHighlight(field.field.xpath)}
-              className="glass-card p-3 cursor-pointer hover:bg-white/20 transition-all duration-smooth"
+              onClick={() => {
+                if (willFill) {
+                  handleFillField(field);
+                } else {
+                  handleHighlight(field.field.xpath);
+                }
+              }}
+              className={`glass-card p-3 transition-all duration-smooth ${
+                willFill 
+                  ? 'cursor-pointer hover:bg-success/10 hover:border-success/30 border border-transparent' 
+                  : 'cursor-pointer hover:bg-white/20'
+              }`}
             >
               <div className="flex items-center justify-between">
                 <div className="flex-1 min-w-0">
@@ -54,24 +84,35 @@ const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence }) => {
                     {field.matchedKey && ` → ${field.matchedKey}`}
                   </p>
                 </div>
-                <div className="ml-2 flex items-center space-x-2">
+                <div className="ml-2">
                   <ConfidenceBadge confidence={field.confidence} />
-                  {willFill && (
-                    <svg className="w-4 h-4 text-success" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                    </svg>
-                  )}
                 </div>
               </div>
+              {willFill && (
+                <p className="text-xs text-success mt-2 font-medium">
+                  Click to fill this field
+                </p>
+              )}
             </div>
           );
         })}
       </div>
 
-      {fields.length > displayFields.length && (
-        <p className="text-xs text-center text-gray-500 dark:text-gray-400 mt-2">
-          +{fields.length - displayFields.length} more field{fields.length - displayFields.length !== 1 ? 's' : ''}
-        </p>
+      {hasMore && (
+        <button
+          onClick={() => setShowAll(!showAll)}
+          className="w-full text-xs text-center text-primary-purple dark:text-primary-blue font-medium py-2 hover:bg-white/20 dark:hover:bg-gray-700/20 rounded-lg transition-all"
+        >
+          {showAll ? (
+            <>
+              ▲ Show less
+            </>
+          ) : (
+            <>
+              ▼ Show {filteredFields.length - displayFields.length} more field{filteredFields.length - displayFields.length !== 1 ? 's' : ''}
+            </>
+          )}
+        </button>
       )}
     </div>
   );

@@ -2,16 +2,21 @@
  * Content script - runs on all web pages
  */
 
-import { Message, DetectedField, FormDetectionResult } from '../types';
+import { Message, DetectedField, FormDetectionResult, FormTemplate } from '../types';
 import { detectFormFields, countForms, observeFormChanges, getElementByXPath, highlightField, removeHighlight, removeAllHighlights } from './formDetector';
 import { matchFields, getFillValue } from './fieldMatcher';
 import { getPrimaryFormData, saveLastFill, getLastFill, getSettings } from '../utils/storage';
 import { setupInlineButtons, removeAllInlineButtons } from './inlineButton';
 import { analyzeFieldsWithAI } from '../utils/aiFormAnalyzer';
 import { extractProfileFromResume, fillFormFromProfile } from '../utils/resumeExtractor';
+import { hideFieldEditor } from './fieldEditor';
+import { startFormMonitoring, calculateFillPercentage, getCurrentFormValues, getFieldStructure } from './formMonitor';
+import { findMatchingTemplates, saveTemplate, incrementTemplateUsage } from '../utils/templateStorage';
 
 let detectedFields: DetectedField[] = [];
 let formObserver: MutationObserver | null = null;
+let formMonitorCleanup: (() => void) | null = null;
+let saveTemplateNotificationShown = false;
 
 /**
  * Initialize content script
@@ -64,6 +69,12 @@ async function detectAndNotify() {
   if (settings.autoFillEnabled) {
     setupInlineButtons(detectedFields);
   }
+  
+  // Start monitoring form fill status
+  startMonitoringForm(fields);
+  
+  // Setup form submit interception for validation
+  setupSubmitValidation();
   
   // Notify background script
   chrome.runtime.sendMessage({
@@ -132,8 +143,22 @@ async function handleMessage(message: Message, sendResponse: (response?: any) =>
       });
       break;
       
+    case 'REMATCH_FIELDS':
+      await rematchWithProfile(message.payload.profileId);
+      sendResponse({
+        fields: detectedFields,
+        formCount: countForms(),
+        url: window.location.href,
+      });
+      break;
+      
     case 'FILL_FORM':
       await fillForm(message.payload);
+      sendResponse({ success: true });
+      break;
+      
+    case 'FILL_SINGLE_FIELD':
+      await fillSingleFieldFromMessage(message.payload);
       sendResponse({ success: true });
       break;
       
@@ -151,6 +176,24 @@ async function handleMessage(message: Message, sendResponse: (response?: any) =>
       sendResponse({ success: true });
       break;
       
+    case 'SAVE_TEMPLATE':
+      await saveCurrentFormAsTemplate(message.payload);
+      sendResponse({ success: true });
+      break;
+      
+    case 'APPLY_TEMPLATE':
+      await applyTemplate(message.payload.templateId);
+      sendResponse({ success: true });
+      break;
+      
+    case 'GET_FILL_STATUS':
+      const formFields = detectFormFields();
+      sendResponse({
+        fillPercentage: calculateFillPercentage(formFields),
+        currentValues: getCurrentFormValues(formFields),
+      });
+      break;
+      
     default:
       sendResponse({ error: 'Unknown message type' });
   }
@@ -159,12 +202,20 @@ async function handleMessage(message: Message, sendResponse: (response?: any) =>
 /**
  * Fill form with saved data
  */
-async function fillForm(options: { minConfidence?: number; highlight?: boolean } = {}) {
+async function fillForm(options: { minConfidence?: number; highlight?: boolean; profileId?: string } = {}) {
   const settings = await getSettings();
   const minConfidence = options.minConfidence ?? settings.minConfidence;
   const shouldHighlight = options.highlight ?? settings.highlightFields;
   
-  const savedData = await getPrimaryFormData();
+  // Get data from selected profile or primary
+  let savedData;
+  if (options.profileId) {
+    const { getFormDataById } = await import('../utils/storage');
+    const profile = await getFormDataById(options.profileId);
+    savedData = profile?.data || {};
+  } else {
+    savedData = await getPrimaryFormData();
+  }
   const previousValues: Array<{ xpath: string; value: string }> = [];
   
   removeAllHighlights();
@@ -264,6 +315,84 @@ async function undoFill() {
 }
 
 /**
+ * Re-match fields with a different profile
+ */
+async function rematchWithProfile(profileId: string) {
+  if (!profileId) return;
+  
+  // Get the selected profile data
+  const { getFormDataById } = await import('../utils/storage');
+  const profile = await getFormDataById(profileId);
+  
+  if (!profile) return;
+  
+  const savedData = profile.data;
+  
+  // Get current form fields
+  const fields = detectFormFields();
+  
+  // Re-match with new profile data
+  detectedFields = matchFields(fields, savedData);
+  
+  // Update inline buttons
+  const settings = await getSettings();
+  if (settings.autoFillEnabled) {
+    setupInlineButtons(detectedFields);
+  }
+  
+  console.log(`Form Bot: Re-matched fields with profile "${profile.name}"`);
+}
+
+/**
+ * Fill a single field from popup click
+ */
+async function fillSingleFieldFromMessage(payload: any) {
+  const { xpath, matchedKey, fieldType, profileId } = payload;
+  
+  if (!matchedKey) return;
+  
+  // Get data from selected profile
+  let savedData;
+  if (profileId) {
+    const { getFormDataById } = await import('../utils/storage');
+    const profile = await getFormDataById(profileId);
+    savedData = profile?.data || {};
+  } else {
+    savedData = await getPrimaryFormData();
+  }
+  
+  const fillValue = savedData[matchedKey];
+  if (!fillValue) return;
+  
+  const element = getElementByXPath(xpath) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement | null;
+  if (!element) return;
+  
+  // Fill the field
+  if ('value' in element) {
+    (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value = fillValue;
+  } else if ((element as HTMLElement).isContentEditable) {
+    (element as HTMLElement).textContent = fillValue;
+  }
+  
+  // Trigger events
+  element.dispatchEvent(new Event('input', { bubbles: true }));
+  element.dispatchEvent(new Event('change', { bubbles: true }));
+  
+  if ((element as HTMLElement).isContentEditable) {
+    element.dispatchEvent(new Event('keyup', { bubbles: true }));
+    element.dispatchEvent(new Event('blur', { bubbles: true }));
+  }
+  
+  // Visual feedback
+  element.classList.add('formbot-highlight-success');
+  element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  
+  setTimeout(() => {
+    element.classList.remove('formbot-highlight-success');
+  }, 2000);
+}
+
+/**
  * Highlight a specific field
  */
 function highlightSpecificField(xpath: string) {
@@ -274,6 +403,389 @@ function highlightSpecificField(xpath: string) {
     highlightField(element);
     element.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
+}
+
+/**
+ * Start monitoring form for fill completion
+ */
+function startMonitoringForm(fields: any[]) {
+  // Clean up previous monitor
+  if (formMonitorCleanup) {
+    formMonitorCleanup();
+  }
+  
+  saveTemplateNotificationShown = false;
+  
+  formMonitorCleanup = startFormMonitoring(fields, async (percentage) => {
+    console.log(`Form Bot: Form ${Math.floor(percentage)}% filled`);
+    
+    // Notify popup that form is ready to be saved as template
+    chrome.runtime.sendMessage({
+      type: 'FORM_FILL_THRESHOLD_REACHED',
+      payload: { percentage },
+    }).catch(() => {
+      // Popup might not be open, that's okay
+    });
+    
+    saveTemplateNotificationShown = true;
+  }, 60); // 60% threshold
+}
+
+/**
+ * Save current form as a template
+ */
+async function saveCurrentFormAsTemplate(payload: { name: string; profileId: string }) {
+  const fields = detectFormFields();
+  
+  if (fields.length === 0) {
+    throw new Error('No fields detected');
+  }
+  
+  const savedData = await getPrimaryFormData();
+  const matchedFields = matchFields(fields, savedData);
+  
+  // Create field mappings
+  const fieldMappings = matchedFields
+    .filter(df => df.matchedKey && df.confidence >= 50)
+    .map(df => ({
+      fieldName: df.field.name || df.field.id || '',
+      fieldLabel: df.field.label || '',
+      dataKey: df.matchedKey!,
+      customValue: undefined,
+    }));
+  
+  const template: FormTemplate = {
+    id: `template_${Date.now()}`,
+    name: payload.name,
+    urlPattern: window.location.href.split('?')[0], // Remove query params
+    linkedProfileId: payload.profileId,
+    fieldMappings,
+    fieldStructure: getFieldStructure(fields),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    usageCount: 0,
+  };
+  
+  await saveTemplate(template);
+  
+  console.log('Form Bot: Template saved:', template.name);
+}
+
+/**
+ * Apply a saved template to current form
+ */
+async function applyTemplate(templateId: string) {
+  const { getTemplateById } = await import('../utils/templateStorage');
+  const template = await getTemplateById(templateId);
+  
+  if (!template) {
+    alert('Template not found');
+    return;
+  }
+  
+  showLoadingOverlay(`Applying template "${template.name}"...`);
+  
+  try {
+    // Get profile data
+    const { getFormDataById } = await import('../utils/storage');
+    const profile = await getFormDataById(template.linkedProfileId);
+    
+    if (!profile) {
+      throw new Error('Linked profile not found');
+    }
+    
+    const fields = detectFormFields();
+    const previousValues: Array<{ xpath: string; value: string }> = [];
+    let filledCount = 0;
+    
+    // Fill fields based on template mappings
+    for (const mapping of template.fieldMappings) {
+      // Find matching field on current form
+      const field = fields.find(f => 
+        f.name === mapping.fieldName || 
+        f.label === mapping.fieldLabel
+      );
+      
+      if (!field) continue;
+      
+      const fillValue = mapping.customValue || profile.data[mapping.dataKey];
+      if (!fillValue) continue;
+      
+      const element = field.element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement;
+      
+      // Save previous value
+      const currentValue = ('value' in element) ? (element as HTMLInputElement).value : element.textContent || '';
+      previousValues.push({
+        xpath: field.xpath,
+        value: currentValue,
+      });
+      
+      // Fill the field
+      if ('value' in element) {
+        (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value = fillValue;
+      } else if ((element as HTMLElement).isContentEditable) {
+        (element as HTMLElement).textContent = fillValue;
+      }
+      
+      // Trigger events
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      
+      if ((element as HTMLElement).isContentEditable) {
+        element.dispatchEvent(new Event('keyup', { bubbles: true }));
+        element.dispatchEvent(new Event('blur', { bubbles: true }));
+      }
+      
+      // Highlight
+      element.classList.add('formbot-highlight-success');
+      setTimeout(() => element.classList.remove('formbot-highlight-success'), 2000);
+      
+      filledCount++;
+    }
+    
+    // Save for undo
+    await saveLastFill(previousValues);
+    
+    // Increment usage count
+    await incrementTemplateUsage(templateId);
+    
+    hideLoadingOverlay();
+    showSuccessMessage(`✓ Applied template "${template.name}" - ${filledCount} fields filled!`);
+  } catch (error) {
+    hideLoadingOverlay();
+    alert(`Failed to apply template: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Setup form submit validation
+ */
+function setupSubmitValidation() {
+  // Find all forms on the page
+  const forms = document.querySelectorAll('form');
+  
+  forms.forEach(form => {
+    // Remove any existing listener
+    form.removeEventListener('submit', handleFormSubmit);
+    // Add new listener
+    form.addEventListener('submit', handleFormSubmit);
+  });
+  
+  console.log(`Form Bot: Monitoring ${forms.length} form(s) for submit validation`);
+}
+
+/**
+ * Handle form submit - validate before allowing submission
+ */
+async function handleFormSubmit(event: Event) {
+  const form = event.target as HTMLFormElement;
+  
+  // Get all filled field values from the form
+  const formData = new FormData(form);
+  const filledData: { [key: string]: string } = {};
+  const fieldTypes: { [key: string]: string } = {};
+  
+  formData.forEach((value, key) => {
+    if (value && String(value).trim()) {
+      filledData[key] = String(value);
+    }
+  });
+  
+  // Also check contenteditable fields
+  const contentEditables = form.querySelectorAll('[contenteditable="true"]');
+  contentEditables.forEach(el => {
+    const text = (el as HTMLElement).textContent?.trim();
+    if (text) {
+      const label = (el as HTMLElement).getAttribute('aria-label') || 'field';
+      filledData[label] = text;
+    }
+  });
+  
+  // Get field types from our detected fields
+  detectedFields.forEach(df => {
+    if (df.field.name) {
+      fieldTypes[df.field.name] = df.fieldType;
+    }
+  });
+  
+  // If form has no data, allow submission
+  if (Object.keys(filledData).length === 0) {
+    return;
+  }
+  
+  // Validate the form data
+  const { validateFormData } = await import('../utils/validator');
+  const validation = await validateFormData(filledData, fieldTypes, window.location.href);
+  
+  if (!validation.isValid) {
+    // Block submission
+    event.preventDefault();
+    event.stopPropagation();
+    
+    // Show validation modal
+    showValidationModal(validation, form);
+  }
+}
+
+/**
+ * Show validation modal on page
+ */
+function showValidationModal(validation: any, form: HTMLFormElement) {
+  // Remove any existing modal
+  const existing = document.getElementById('formbot-validation-modal');
+  if (existing) existing.remove();
+  
+  const modal = document.createElement('div');
+  modal.id = 'formbot-validation-modal';
+  modal.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(4px);
+    z-index: 99999999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    animation: fadeIn 0.2s;
+  `;
+  
+  const hasSecurityWarnings = validation.securityWarnings.length > 0;
+  const hasErrors = validation.issues.some((i: any) => i.severity === 'error');
+  
+  let issuesHTML = '';
+  
+  // Security warnings
+  validation.securityWarnings.forEach((warning: any) => {
+    issuesHTML += `
+      <div style="background: #FEE2E2; border: 2px solid #EF4444; border-radius: 8px; padding: 16px; margin-bottom: 12px;">
+        <div style="display: flex; align-items-start;">
+          <span style="font-size: 24px; margin-right: 12px;">🚨</span>
+          <div>
+            <p style="font-weight: bold; color: #991B1B; margin: 0 0 8px 0;">
+              Security Alert: ${warning.field}
+            </p>
+            <p style="color: #7F1D1D; margin: 0; font-size: 14px;">
+              ${warning.message}
+            </p>
+            ${warning.suggestion ? `
+              <p style="color: #991B1B; margin: 8px 0 0 0; font-size: 13px;">
+                💡 ${warning.suggestion}
+              </p>
+            ` : ''}
+          </div>
+        </div>
+      </div>
+    `;
+  });
+  
+  // Validation issues
+  validation.issues.forEach((issue: any) => {
+    const bgColor = issue.severity === 'error' ? '#FEE2E2' : '#FEF3C7';
+    const borderColor = issue.severity === 'error' ? '#EF4444' : '#F59E0B';
+    const textColor = issue.severity === 'error' ? '#991B1B' : '#92400E';
+    const icon = issue.severity === 'error' ? '❌' : '⚠️';
+    
+    issuesHTML += `
+      <div style="background: ${bgColor}; border: 1px solid ${borderColor}; border-radius: 8px; padding: 12px; margin-bottom: 8px;">
+        <p style="font-weight: 600; color: ${textColor}; margin: 0 0 4px 0; font-size: 14px;">
+          ${icon} ${issue.field}
+        </p>
+        <p style="color: ${textColor}; margin: 0; font-size: 13px;">
+          ${issue.message}
+        </p>
+        ${issue.suggestion ? `
+          <p style="color: ${textColor}; margin: 4px 0 0 0; font-size: 12px; opacity: 0.9;">
+            💡 ${issue.suggestion}
+          </p>
+        ` : ''}
+      </div>
+    `;
+  });
+  
+  modal.innerHTML = `
+    <div style="background: white; border-radius: 16px; padding: 24px; max-width: 500px; max-height: 80vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.4);">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
+        <h2 style="margin: 0; font-size: 20px; font-weight: bold; color: #111;">
+          ${hasSecurityWarnings ? '🚨 Security & Validation Issues' : hasErrors ? '❌ Validation Errors' : '⚠️ Validation Warnings'}
+        </h2>
+        <button id="formbot-validation-close" style="background: none; border: none; font-size: 24px; color: #666; cursor: pointer; padding: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 4px;">
+          ×
+        </button>
+      </div>
+      
+      <div style="margin-bottom: 20px;">
+        ${issuesHTML}
+      </div>
+      
+      <div style="display: flex; gap: 12px;">
+        ${hasSecurityWarnings || hasErrors ? `
+          <button id="formbot-validation-cancel" style="flex: 1; padding: 12px; background: #EF4444; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 14px;">
+            🛑 Don't Submit
+          </button>
+        ` : ''}
+        ${!hasErrors ? `
+          <button id="formbot-validation-submit" style="flex: 1; padding: 12px; background: ${hasSecurityWarnings ? '#F59E0B' : '#8B5CF6'}; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 14px;">
+            ${hasSecurityWarnings ? '⚠️ Submit Anyway' : '✓ Submit Form'}
+          </button>
+        ` : `
+          <div style="flex: 1; text-align: center; padding: 12px; background: #FEE2E2; border-radius: 8px;">
+            <p style="margin: 0; color: #991B1B; font-weight: 600; font-size: 14px;">
+              Please fix errors before submitting
+            </p>
+          </div>
+        `}
+      </div>
+      
+      <p style="margin: 16px 0 0 0; text-align: center; font-size: 11px; color: #666;">
+        Form Bot is protecting your data
+      </p>
+    </div>
+  `;
+  
+  // Add styles
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    #formbot-validation-close:hover {
+      background: #f3f4f6;
+    }
+    #formbot-validation-cancel:hover {
+      background: #DC2626;
+    }
+    #formbot-validation-submit:hover {
+      background: ${hasSecurityWarnings ? '#D97706' : '#7C3AED'};
+    }
+  `;
+  modal.appendChild(style);
+  
+  document.body.appendChild(modal);
+  
+  // Event listeners
+  const closeBtn = modal.querySelector('#formbot-validation-close');
+  const cancelBtn = modal.querySelector('#formbot-validation-cancel');
+  const submitBtn = modal.querySelector('#formbot-validation-submit');
+  
+  closeBtn?.addEventListener('click', () => modal.remove());
+  cancelBtn?.addEventListener('click', () => modal.remove());
+  submitBtn?.addEventListener('click', () => {
+    modal.remove();
+    // Allow form submission
+    form.submit();
+  });
+  
+  // Close on outside click
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      modal.remove();
+    }
+  });
 }
 
 /**
@@ -501,6 +1013,7 @@ if (document.readyState === 'loading') {
 // Clean up on page unload
 window.addEventListener('beforeunload', () => {
   removeAllInlineButtons();
+  hideFieldEditor();
   if (formObserver) {
     formObserver.disconnect();
   }

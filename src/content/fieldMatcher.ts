@@ -225,13 +225,16 @@ function findFuzzyMatch(
           fieldText.length / normalizedKey.length
         );
         
-        const specificity = calculateSpecificity(normalizedKey, fieldText);
-        matches.push({ key, score, specificity });
+        // Only consider if there's substantial overlap
+        if (score > 0.5) {
+          const specificity = calculateSpecificity(normalizedKey, fieldText);
+          matches.push({ key, score, specificity });
+        }
       }
       
-      // Also check character similarity
+      // STRICT character similarity - only very high similarity
       const similarity = calculateSimilarity(fieldText, normalizedKey);
-      if (similarity > 0.4) {
+      if (similarity > 0.7) { // Much stricter threshold (was 0.4)
         const specificity = calculateSpecificity(normalizedKey, fieldText);
         matches.push({ key, score: similarity, specificity });
       }
@@ -248,6 +251,12 @@ function findFuzzyMatch(
     });
     
     const bestMatch = sorted[0];
+    
+    // Require minimum score to return a match
+    if (bestMatch.score < 0.6) {
+      return null;
+    }
+    
     const confidence = Math.min(Math.floor(bestMatch.score * 85), 80);
     return { matchedKey: bestMatch.key, confidence };
   }
@@ -273,6 +282,24 @@ function shouldSkipMatch(fieldText: string, keyText: string): boolean {
        fieldText.includes('business')) && 
       keyText === 'name') {
     return true;
+  }
+  
+  // Don't match completely unrelated fields
+  const unrelatablePatterns = [
+    { field: 'name', skipKeys: ['patent', 'project', 'skill', 'education', 'experience', 'certification'] },
+    { field: 'email', skipKeys: ['patent', 'project', 'name', 'skill', 'education'] },
+    { field: 'phone', skipKeys: ['patent', 'project', 'email', 'skill', 'education'] },
+    { field: 'address', skipKeys: ['patent', 'project', 'email', 'phone', 'skill'] },
+  ];
+  
+  for (const pattern of unrelatablePatterns) {
+    if (fieldText.includes(pattern.field)) {
+      for (const skipKey of pattern.skipKeys) {
+        if (keyText.includes(skipKey)) {
+          return true;
+        }
+      }
+    }
   }
   
   return false;
