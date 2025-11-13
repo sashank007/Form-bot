@@ -6,6 +6,7 @@ import { DetectedField } from '../types';
 import { getFillValue } from './fieldMatcher';
 import { getPrimaryFormData } from '../utils/storage';
 import { showFieldEditor, isComplexValue } from './fieldEditor';
+import { fillFieldWithEvents } from '../utils/eventSimulator';
 
 const BUTTON_ID_PREFIX = 'formbot-inline-btn-';
 const BUTTON_CLASS = 'formbot-inline-button';
@@ -21,46 +22,53 @@ export function createInlineButton(detectedField: DetectedField, index: number):
   button.setAttribute('aria-label', 'Auto-fill this field');
   button.title = `Fill with saved data (${detectedField.confidence}% confidence)`;
   
-  // Add icon
+  // Add beaver icon
+  const beaverIconUrl = chrome.runtime.getURL('icons/beaver_head.png');
   button.innerHTML = `
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <path d="M13 10V3L4 14h7v7l9-11h-7z"/>
-    </svg>
+    <img src="${beaverIconUrl}" alt="Fill" style="width: 24px; height: 24px; object-fit: contain; display: block;" />
   `;
   
   // Style the button
   Object.assign(button.style, {
     position: 'absolute',
     zIndex: '999999',
-    width: '28px',
-    height: '28px',
+    width: '32px',
+    height: '32px',
     padding: '4px',
-    background: 'linear-gradient(135deg, #8B5CF6 0%, #3B82F6 100%)',
-    border: 'none',
-    borderRadius: '6px',
+    background: 'white',
+    border: '2px solid #000000',
+    borderRadius: '50%',
     cursor: 'pointer',
     display: 'none',
-    boxShadow: '0 2px 8px rgba(139, 92, 246, 0.3)',
+    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
     transition: 'all 0.2s ease',
     outline: 'none',
   });
   
   // Hover effect
   button.addEventListener('mouseenter', () => {
-    button.style.transform = 'scale(1.1)';
-    button.style.boxShadow = '0 4px 12px rgba(139, 92, 246, 0.5)';
+    button.style.transform = 'scale(1.15)';
+    button.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.25)';
+    button.style.borderColor = '#8B5CF6';
   });
   
   button.addEventListener('mouseleave', () => {
     button.style.transform = 'scale(1)';
-    button.style.boxShadow = '0 2px 8px rgba(139, 92, 246, 0.3)';
+    button.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.15)';
+    button.style.borderColor = '#000000';
   });
   
   // Click handler
   button.addEventListener('click', async (e) => {
     e.preventDefault();
     e.stopPropagation();
-    await fillSingleField(detectedField, button);
+    console.log('Inline button clicked for field:', detectedField.field.label || detectedField.field.name);
+    console.log('Matched key:', detectedField.matchedKey, 'Confidence:', detectedField.confidence);
+    try {
+      await fillSingleField(detectedField, button);
+    } catch (error) {
+      console.error('Inline button fill failed:', error);
+    }
   });
   
   return button;
@@ -154,11 +162,17 @@ export function attachButtonListeners(detectedField: DetectedField, button: HTML
  * Fill a single field
  */
 async function fillSingleField(detectedField: DetectedField, button: HTMLButtonElement) {
+  console.log('fillSingleField called');
+  
   if (!detectedField.matchedKey) {
+    console.error('No matched key for field');
     return;
   }
   
+  console.log('Getting data for key:', detectedField.matchedKey);
   const savedData = await getPrimaryFormData();
+  console.log('Primary data keys:', Object.keys(savedData));
+  
   const fillValue = getFillValue(
     detectedField.field,
     detectedField.fieldType,
@@ -167,30 +181,36 @@ async function fillSingleField(detectedField: DetectedField, button: HTMLButtonE
   );
   
   if (!fillValue) {
+    console.error('No fill value found for key:', detectedField.matchedKey);
     return;
   }
+  
+  console.log('Fill value found, length:', fillValue.length, 'Complex:', isComplexValue(fillValue));
   
   const element = detectedField.field.element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement;
   
   // Check if value is complex (needs editing)
   if (isComplexValue(fillValue)) {
+    console.log('Showing field editor for complex value');
     // Show editor for user to customize
     showFieldEditor({
       fieldElement: element,
       suggestedValue: fillValue,
       fieldLabel: detectedField.field.label || detectedField.field.name || 'Field',
       onConfirm: (editedValue) => {
+        console.log('Editor confirmed, filling with edited value');
         performFill(element, editedValue);
         showFillSuccess(button);
       },
       onCancel: () => {
-        // User cancelled, do nothing
+        console.log('Editor cancelled');
       },
     });
     return;
   }
   
   // Simple value - fill directly
+  console.log('Filling directly (simple value)');
   performFill(element, fillValue);
   showFillSuccess(button);
 }
@@ -199,21 +219,8 @@ async function fillSingleField(detectedField: DetectedField, button: HTMLButtonE
  * Perform the actual fill operation
  */
 function performFill(element: HTMLElement, value: string) {
-  // Fill the field
-  if ('value' in element) {
-    (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value = value;
-  } else if ((element as HTMLElement).isContentEditable) {
-    (element as HTMLElement).textContent = value;
-  }
-  
-  // Trigger events
-  element.dispatchEvent(new Event('input', { bubbles: true }));
-  element.dispatchEvent(new Event('change', { bubbles: true }));
-  
-  if ((element as HTMLElement).isContentEditable) {
-    element.dispatchEvent(new Event('keyup', { bubbles: true }));
-    element.dispatchEvent(new Event('blur', { bubbles: true }));
-  }
+  // Fill with proper event simulation (React/Angular compatible)
+  fillFieldWithEvents(element as any, value);
   
   // Add highlight to field
   element.classList.add('formbot-highlight-success');
@@ -231,7 +238,7 @@ function showFillSuccess(button: HTMLButtonElement) {
   
   // Change to checkmark
   button.innerHTML = `
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3">
       <path d="M20 6L9 17l-5-5"/>
     </svg>
   `;

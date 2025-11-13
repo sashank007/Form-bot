@@ -30,6 +30,13 @@ export const DEFAULT_FIELD_MAPPINGS: FieldMapping = {
   cardCVV: ['cvv', 'cvc', 'securitycode', 'security-code', 'csc'],
 };
 
+// Extended patterns for common variations
+export const EXTENDED_FIELD_MAPPINGS: { [key: string]: string[] } = {
+  passportNumber: ['passport', 'passportnumber', 'passport-number', 'passport_number', 'travel-document', 'traveldocument', 'document-number'],
+  licenseNumber: ['license', 'licensenumber', 'license-number', 'drivers-license', 'driverslicense', 'dl-number'],
+  idNumber: ['id', 'idnumber', 'id-number', 'identification', 'govt-id'],
+};
+
 /**
  * Normalize a string for comparison
  */
@@ -66,6 +73,15 @@ export function classifyField(
 
   // Combine all text attributes for analysis
   const combinedText = normalizeString(`${name} ${id} ${placeholder} ${label} ${ariaLabel}`);
+  
+  // Check extended patterns for passport, license, etc.
+  for (const [fieldType, patterns] of Object.entries(EXTENDED_FIELD_MAPPINGS)) {
+    for (const pattern of patterns) {
+      if (combinedText.includes(normalizeString(pattern))) {
+        return { fieldType: fieldType as FieldType, confidence: 90 };
+      }
+    }
+  }
   
   // Special case: email input type
   if (type === 'email') {

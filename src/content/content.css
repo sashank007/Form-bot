@@ -9,9 +9,31 @@
 }
 
 .formbot-highlight-success {
-  outline: 2px solid #10B981 !important;
+  outline: 3px solid #10B981 !important;
   outline-offset: 2px !important;
-  animation: formbot-success-pulse 1s ease-in-out !important;
+  background-color: rgba(16, 185, 129, 0.05) !important;
+  animation: formbot-success-pulse 0.6s ease-in-out !important;
+  position: relative !important;
+}
+
+.formbot-highlight-success::after {
+  content: '✓' !important;
+  position: absolute !important;
+  top: -12px !important;
+  right: -12px !important;
+  width: 24px !important;
+  height: 24px !important;
+  background: #10B981 !important;
+  color: white !important;
+  border-radius: 50% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 16px !important;
+  font-weight: bold !important;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.4) !important;
+  animation: formbot-checkmark-appear 0.3s ease-out !important;
+  z-index: 999999 !important;
 }
 
 .formbot-highlight-warning {
@@ -35,15 +57,32 @@
 @keyframes formbot-success-pulse {
   0% {
     outline-color: #10B981;
-    outline-width: 2px;
+    outline-width: 3px;
+    transform: scale(1);
   }
   50% {
     outline-color: #34D399;
-    outline-width: 3px;
+    outline-width: 4px;
+    transform: scale(1.02);
   }
   100% {
     outline-color: #10B981;
-    outline-width: 2px;
+    outline-width: 3px;
+    transform: scale(1);
+  }
+}
+
+@keyframes formbot-checkmark-appear {
+  0% {
+    transform: scale(0) rotate(-45deg);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.2) rotate(0deg);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
   }
 }
 
@@ -59,6 +98,34 @@
   100% {
     outline-color: #F59E0B;
     outline-width: 2px;
+  }
+}
+
+/* Progress indicator */
+.formbot-filling-progress {
+  position: fixed !important;
+  top: 20px !important;
+  right: 20px !important;
+  background: linear-gradient(135deg, #10B981 0%, #059669 100%) !important;
+  color: white !important;
+  padding: 12px 20px !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3) !important;
+  z-index: 99999999 !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  animation: formbot-slide-in 0.3s ease-out !important;
+}
+
+@keyframes formbot-slide-in {
+  from {
+    transform: translateX(400px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
   }
 }
 

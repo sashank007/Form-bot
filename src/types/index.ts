@@ -75,6 +75,9 @@ export type FieldType =
   | 'cardNumber'
   | 'cardExpiry'
   | 'cardCVV'
+  | 'passportNumber'
+  | 'licenseNumber'
+  | 'idNumber'
   | 'unknown';
 
 export type ConfidenceLevel = 'high' | 'medium' | 'low';

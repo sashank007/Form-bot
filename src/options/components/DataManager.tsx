@@ -5,6 +5,7 @@
 import React, { useEffect, useState } from 'react';
 import { SavedFormData, FormData } from '../../types';
 import { getAllFormData, saveFormData, deleteFormData, exportData, importData } from '../../utils/storage';
+import { PROFILE_TEMPLATES, createProfileFromTemplate } from '../../utils/profileTemplates';
 
 const DataManager: React.FC = () => {
   const [profiles, setProfiles] = useState<SavedFormData[]>([]);
@@ -12,6 +13,7 @@ const DataManager: React.FC = () => {
   const [editingData, setEditingData] = useState<FormData>({});
   const [editingName, setEditingName] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
+  const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [newFieldKey, setNewFieldKey] = useState('');
   const [newFieldValue, setNewFieldValue] = useState('');
 
@@ -53,6 +55,7 @@ const DataManager: React.FC = () => {
     setEditingData({});
     setEditingName('');
     setShowAddForm(false);
+    setShowTemplateSelector(false);
   };
 
   const handleDelete = async (id: string) => {
@@ -63,19 +66,27 @@ const DataManager: React.FC = () => {
   };
 
   const handleAddNew = () => {
+    setShowTemplateSelector(true);
+  };
+
+  const handleSelectTemplate = (templateId: string) => {
+    const template = PROFILE_TEMPLATES.find(t => t.id === templateId);
+    if (!template) return;
+
+    const newId = `profile_${Date.now()}`;
+    setEditingId(newId);
+    setEditingName(template.name);
+    setEditingData(createProfileFromTemplate(template));
+    setShowTemplateSelector(false);
+    setShowAddForm(true);
+  };
+
+  const handleCreateBlank = () => {
     const newId = `profile_${Date.now()}`;
     setEditingId(newId);
     setEditingName('New Profile');
-    setEditingData({
-      firstName: '',
-      lastName: '',
-      email: '',
-      phone: '',
-      address: '',
-      city: '',
-      state: '',
-      zipCode: '',
-    });
+    setEditingData({});
+    setShowTemplateSelector(false);
     setShowAddForm(true);
   };
 
@@ -168,8 +179,48 @@ const DataManager: React.FC = () => {
         </div>
       </div>
 
+      {/* Template Selector */}
+      {showTemplateSelector && (
+        <div className="bg-white dark:bg-gray-800 rounded-card shadow-lg p-6 border-2 border-primary-purple">
+          <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-4">Choose Profile Template</h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+            Select a pre-built template with common fields, or start from scratch
+          </p>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            {PROFILE_TEMPLATES.map(template => (
+              <button
+                key={template.id}
+                onClick={() => handleSelectTemplate(template.id)}
+                className="text-left p-4 border-2 border-gray-200 dark:border-gray-700 rounded-lg hover:border-primary-purple hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-all"
+              >
+                <div className="flex items-start gap-3">
+                  <span className="text-3xl">{template.icon}</span>
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-gray-900 dark:text-gray-100">{template.name}</h4>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">{template.description}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-500 mt-2">
+                      {template.fields.length} pre-configured fields
+                    </p>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <div className="flex gap-2">
+            <button onClick={handleCreateBlank} className="flex-1 btn-secondary">
+              Start from Scratch (Empty Profile)
+            </button>
+            <button onClick={() => setShowTemplateSelector(false)} className="flex-1 btn-secondary">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Editing Form */}
-      {editingId && (
+      {editingId && !showTemplateSelector && (
         <div className="bg-white dark:bg-gray-800 rounded-card shadow-lg p-6 border-2 border-primary-purple">
           <div className="flex justify-between items-center mb-4">
             <input

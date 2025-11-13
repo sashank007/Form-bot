@@ -14,6 +14,9 @@ import { startFormMonitoring, calculateFillPercentage, getCurrentFormValues, get
 import { findMatchingTemplates, saveTemplate, incrementTemplateUsage, getTemplateById } from '../utils/templateStorage';
 import { getProfileSecrets } from '../utils/secretsStorage';
 import { validateFormData } from '../utils/validator';
+import { analyzeAllFieldsWithAI, applyAIAnalysisResults } from '../utils/aiComprehensiveAnalyzer';
+import { fillFieldWithEvents } from '../utils/eventSimulator';
+import { analyzeField } from '../utils/fieldPurposeIdentifier';
 
 let detectedFields: DetectedField[] = [];
 let formObserver: MutationObserver | null = null;
@@ -59,12 +62,25 @@ async function detectAndNotify() {
   
   // Get saved data and match fields
   const savedData = await getPrimaryFormData();
-  detectedFields = matchFields(fields, savedData);
   
-  // Use AI to improve low-confidence matches
   const settings = await getSettings();
+  
+  // Use comprehensive AI analysis if enabled (analyzes ALL fields)
   if (settings.openAIEnabled && settings.openAIKey) {
-    await enhanceWithAI(savedData);
+    console.log('🧠 AI Comprehensive Mode: Analyzing all fields with full context...');
+    
+    // First do local matching for baseline
+    detectedFields = matchFields(fields, savedData);
+    
+    // Then enhance ALL fields with AI analysis
+    const aiResults = await analyzeAllFieldsWithAI(fields, savedData);
+    detectedFields = applyAIAnalysisResults(detectedFields, aiResults);
+    
+    console.log('✅ AI comprehensive analysis complete');
+  } else {
+    // Fallback to local matching only
+    console.log('📊 Using local field matching (AI disabled)');
+    detectedFields = matchFields(fields, savedData);
   }
   
   // Setup inline buttons for fields
@@ -243,6 +259,15 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
   
   console.log('Content: Starting to fill fields...');
   
+  // Show progress indicator
+  const totalToFill = detectedFields.filter(df => 
+    df.confidence >= minConfidence && 
+    df.matchedKey && 
+    df.fieldType !== 'password'
+  ).length;
+  
+  showProgressIndicator(0, totalToFill);
+  
   for (const detectedField of detectedFields) {
     // Skip low confidence matches
     if (detectedField.confidence < minConfidence) {
@@ -288,23 +313,8 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
       value: currentValue,
     });
     
-    // Fill the field (handle both regular inputs and contenteditable)
-    if ('value' in element) {
-      (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value = fillValue;
-    } else if ((element as HTMLElement).isContentEditable) {
-      // For contenteditable elements (Google Forms)
-      (element as HTMLElement).textContent = fillValue;
-    }
-    
-    // Trigger events to notify the page of the change
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-    
-    // For contenteditable, also trigger keyup and blur events
-    if ((element as HTMLElement).isContentEditable) {
-      element.dispatchEvent(new Event('keyup', { bubbles: true }));
-      element.dispatchEvent(new Event('blur', { bubbles: true }));
-    }
+    // Fill with proper event simulation (React/Angular compatible)
+    fillFieldWithEvents(element, fillValue);
     
     // Highlight field if enabled
     if (shouldHighlight) {
@@ -318,9 +328,15 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
     }
     
     filledCount++;
+    
+    // Update progress indicator
+    updateProgressIndicator(filledCount, totalToFill);
   }
   
   console.log(`Content: Fill complete - ${filledCount} filled, ${skippedCount} skipped`);
+  
+  // Hide progress indicator after a moment
+  setTimeout(() => hideProgressIndicator(), 2000);
   
   // Save state for undo
   await saveLastFill(previousValues);
@@ -431,21 +447,8 @@ async function fillSingleFieldFromMessage(payload: any) {
   
   console.log('Content: Filling element:', element.tagName, element.id || element.getAttribute('name'));
   
-  // Fill the field
-  if ('value' in element) {
-    (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value = fillValue;
-  } else if ((element as HTMLElement).isContentEditable) {
-    (element as HTMLElement).textContent = fillValue;
-  }
-  
-  // Trigger events
-  element.dispatchEvent(new Event('input', { bubbles: true }));
-  element.dispatchEvent(new Event('change', { bubbles: true }));
-  
-  if ((element as HTMLElement).isContentEditable) {
-    element.dispatchEvent(new Event('keyup', { bubbles: true }));
-    element.dispatchEvent(new Event('blur', { bubbles: true }));
-  }
+  // Fill with proper event simulation (React/Angular compatible)
+  fillFieldWithEvents(element as any, fillValue);
   
   // Visual feedback
   element.classList.add('formbot-highlight-success');
@@ -1028,6 +1031,65 @@ function hideLoadingOverlay() {
   const overlay = document.getElementById('formbot-loading-overlay');
   if (overlay) {
     overlay.style.display = 'none';
+  }
+}
+
+/**
+ * Show progress indicator
+ */
+function showProgressIndicator(current: number, total: number) {
+  let indicator = document.getElementById('formbot-progress-indicator');
+  
+  if (!indicator) {
+    indicator = document.createElement('div');
+    indicator.id = 'formbot-progress-indicator';
+    indicator.className = 'formbot-filling-progress';
+    document.body.appendChild(indicator);
+  }
+  
+  indicator.innerHTML = `
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <div style="width: 20px; height: 20px; border: 2px solid white; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+      <span>Filling ${current}/${total} fields...</span>
+    </div>
+  `;
+  
+  const style = document.createElement('style');
+  style.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
+  if (!indicator.querySelector('style')) {
+    indicator.appendChild(style);
+  }
+}
+
+/**
+ * Update progress indicator
+ */
+function updateProgressIndicator(current: number, total: number) {
+  const indicator = document.getElementById('formbot-progress-indicator');
+  if (!indicator) return;
+  
+  indicator.innerHTML = `
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <svg style="width: 20px; height: 20px;" fill="none" stroke="white" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+      </svg>
+      <span>Filled ${current}/${total} fields ✓</span>
+    </div>
+  `;
+  
+  if (current === total) {
+    indicator.style.background = 'linear-gradient(135deg, #10B981 0%, #059669 100%)';
+  }
+}
+
+/**
+ * Hide progress indicator
+ */
+function hideProgressIndicator() {
+  const indicator = document.getElementById('formbot-progress-indicator');
+  if (indicator) {
+    indicator.style.animation = 'formbot-slide-in 0.3s ease-out reverse';
+    setTimeout(() => indicator.remove(), 300);
   }
 }
 

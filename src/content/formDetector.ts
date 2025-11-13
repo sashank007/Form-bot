@@ -193,12 +193,40 @@ function extractContentEditableFieldInfo(element: HTMLElement): FormField {
  * Check if an element is visible and interactable
  */
 function isElementVisible(element: HTMLElement): boolean {
+  // Check offsetWidth and offsetHeight (most reliable for visibility)
+  if (element.offsetWidth === 0 || element.offsetHeight === 0) {
+    return false; // Element has no dimensions, therefore not visible
+  }
+  
+  // Check offsetParent (null means element or ancestor is display:none)
   if (!element.offsetParent && element.tagName !== 'BODY') {
     return false; // Element is hidden
   }
   
+  // Check computed styles
   const style = window.getComputedStyle(element);
-  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+  
+  if (style.display === 'none') {
+    return false;
+  }
+  
+  if (style.visibility === 'hidden') {
+    return false;
+  }
+  
+  if (style.opacity === '0') {
+    return false;
+  }
+  
+  // Check if element is visually hidden (screen reader only)
+  if (style.position === 'absolute' && 
+      (style.clip === 'rect(0px, 0px, 0px, 0px)' || style.clip === 'rect(0, 0, 0, 0)')) {
+    return false;
+  }
+  
+  // Check if element is moved off-screen
+  const rect = element.getBoundingClientRect();
+  if (rect.top < -1000 || rect.left < -1000 || rect.bottom > window.innerHeight + 1000) {
     return false;
   }
   
@@ -279,6 +307,77 @@ function shouldIncludeContentEditable(element: HTMLElement): boolean {
 }
 
 /**
+ * Check if a listbox element should be included
+ */
+function shouldIncludeListbox(element: HTMLElement): boolean {
+  // Must be visible
+  if (!isElementVisible(element)) {
+    return false;
+  }
+  
+  // Must have options
+  const options = element.querySelectorAll('[role="option"]');
+  if (options.length === 0) {
+    return false;
+  }
+  
+  // Skip if read-only
+  if (element.getAttribute('aria-readonly') === 'true' || element.getAttribute('aria-disabled') === 'true') {
+    return false;
+  }
+  
+  return true;
+}
+
+/**
+ * Extract field information from listbox element (custom dropdown)
+ */
+function extractListboxFieldInfo(element: HTMLElement): FormField {
+  // Get label from aria-labelledby
+  let label = '';
+  const ariaLabelledBy = element.getAttribute('aria-labelledby');
+  if (ariaLabelledBy) {
+    const labelIds = ariaLabelledBy.split(' ');
+    const labelTexts: string[] = [];
+    for (const id of labelIds) {
+      const labelElement = document.getElementById(id);
+      if (labelElement && labelElement.textContent) {
+        labelTexts.push(labelElement.textContent.trim());
+      }
+    }
+    if (labelTexts.length > 0) {
+      label = labelTexts.join(' ');
+    }
+  }
+  
+  // Get current selected value
+  const selectedOption = element.querySelector('[role="option"][aria-selected="true"]');
+  const currentValue = selectedOption?.textContent?.trim() || '';
+  
+  // Get all available options
+  const options = element.querySelectorAll('[role="option"]');
+  const optionValues = Array.from(options).map(opt => ({
+    value: opt.getAttribute('data-value') || opt.textContent?.trim() || '',
+    text: opt.textContent?.trim() || '',
+  }));
+  
+  // Store options in element for later use
+  (element as any)._formbot_options = optionValues;
+  
+  return {
+    element: element as any,
+    type: 'listbox', // Custom type for listboxes
+    name: element.getAttribute('jsname') || '',
+    id: element.id || '',
+    placeholder: '',
+    label: label,
+    ariaLabel: element.getAttribute('aria-label') || '',
+    value: currentValue,
+    xpath: getXPath(element),
+  };
+}
+
+/**
  * Detect all form fields on the page
  */
 export function detectFormFields(): FormField[] {
@@ -292,6 +391,9 @@ export function detectFormFields(): FormField[] {
   // Get contenteditable elements (for Google Forms and similar)
   const contentEditables = document.querySelectorAll<HTMLElement>('[contenteditable="true"]');
   
+  // Get ARIA listboxes (Google Forms custom dropdowns)
+  const listboxes = document.querySelectorAll<HTMLElement>('[role="listbox"]');
+  
   const allElements = [...inputs, ...textareas, ...selects];
   
   for (const element of allElements) {
@@ -304,6 +406,13 @@ export function detectFormFields(): FormField[] {
   for (const element of contentEditables) {
     if (shouldIncludeContentEditable(element)) {
       fields.push(extractContentEditableFieldInfo(element));
+    }
+  }
+  
+  // Process listbox elements (custom dropdowns)
+  for (const element of listboxes) {
+    if (shouldIncludeListbox(element)) {
+      fields.push(extractListboxFieldInfo(element));
     }
   }
   

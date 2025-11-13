@@ -4,16 +4,16 @@
   "version": "1.0.0",
   "description": "Intelligent form auto-fill extension with AI-powered field matching",
   "icons": {
-    "16": "icons/icon16.png",
-    "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
+    "16": "icons/formbot_icon.png",
+    "48": "icons/formbot_icon.png",
+    "128": "icons/formbot_icon.png"
   },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
-      "16": "icons/icon16.png",
-      "48": "icons/icon48.png",
-      "128": "icons/icon128.png"
+      "16": "icons/formbot_icon.png",
+      "48": "icons/formbot_icon.png",
+      "128": "icons/formbot_icon.png"
     }
   },
   "background": {
@@ -40,7 +40,7 @@
   "options_page": "options.html",
   "web_accessible_resources": [
     {
-      "resources": ["icons/*"],
+      "resources": ["icons/*", "pdf.worker.min.js"],
       "matches": ["<all_urls>"]
     }
   ]

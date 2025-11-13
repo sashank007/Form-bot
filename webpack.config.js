@@ -60,6 +60,10 @@ module.exports = (env, argv) => {
           { from: 'manifest.json', to: 'manifest.json' },
           { from: 'public', to: '.' },
           { from: 'src/content/content.css', to: 'content.css' },
+          { 
+            from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js', 
+            to: 'pdf.worker.min.js' 
+          },
         ],
       }),
     ],

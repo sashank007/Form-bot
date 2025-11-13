@@ -174,6 +174,26 @@ function getKeyForFieldType(fieldType: FieldType, availableKeys: string[]): stri
     gender: ['gender'],
     username: ['username', 'user'],
   };
+  
+  // Add support for document-specific fields
+  const documentFields: { [key: string]: string[] } = {
+    passportNumber: ['passportNumber', 'passport', 'travelDocument'],
+    licenseNumber: ['licenseNumber', 'driversLicense', 'license'],
+    idNumber: ['idNumber', 'nationalId', 'identification'],
+  };
+  
+  // Check document fields first
+  const docMap = documentFields[fieldType];
+  if (docMap) {
+    for (const possibleKey of docMap) {
+      const normalizedPossible = normalizeString(possibleKey);
+      for (const key of availableKeys) {
+        if (normalizeString(key) === normalizedPossible) {
+          return key;
+        }
+      }
+    }
+  }
 
   const possibleKeys = typeMap[fieldType] || [];
   
