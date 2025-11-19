@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: FormBot Lambda API with API Gateway
+
+Resources:
+  # Lambda Function
+  FormBotFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/formbot-lambda:latest'
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: form-bot-data
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: form-bot-data
+      Events:
+        # User Registration
+        UserRegister:
+          Type: Api
+          Properties:
+            Path: /api/user/register
+            Method: POST
+            RestApiId: !Ref FormBotAPI
+        
+        # Store Employee Data
+        StoreData:
+          Type: Api
+          Properties:
+            Path: /api/user/data
+            Method: POST
+            RestApiId: !Ref FormBotAPI
+        
+        # Get User Data
+        GetUserData:
+          Type: Api
+          Properties:
+            Path: /api/user/data
+            Method: GET
+            RestApiId: !Ref FormBotAPI
+        
+        # Get Profiles
+        GetProfiles:
+          Type: Api
+          Properties:
+            Path: /api/profiles
+            Method: GET
+            RestApiId: !Ref FormBotAPI
+        
+        # Create Profile
+        CreateProfile:
+          Type: Api
+          Properties:
+            Path: /api/profiles
+            Method: POST
+            RestApiId: !Ref FormBotAPI
+        
+        # Sync Endpoint
+        Sync:
+          Type: Api
+          Properties:
+            Path: /api/sync
+            Method: GET
+            RestApiId: !Ref FormBotAPI
+        
+        # Health Check
+        Health:
+          Type: Api
+          Properties:
+            Path: /health
+            Method: GET
+            RestApiId: !Ref FormBotAPI
+
+  # API Gateway
+  FormBotAPI:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Cors:
+        AllowMethods: "'GET, POST, OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+        AllowOrigin: "'*'"
+
+  # DynamoDB Table
+  FormBotTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: form-bot-data
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: dataType
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: N
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: dataType
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: timestamp-index
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${FormBotAPI}.execute-api.${AWS::Region}.amazonaws.com/Prod'
+    Export:
+      Name: FormBotApiUrl
+  
+  TableName:
+    Description: DynamoDB table name
+    Value: !Ref FormBotTable
+

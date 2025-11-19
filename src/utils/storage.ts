@@ -1,8 +1,12 @@
 /**
- * Storage wrapper for form data (simplified - no encryption for now)
+ * Storage wrapper for form data
+ * DynamoDB is the single source of truth
+ * Local storage is only used as cache for offline access
  */
 
 import { SavedFormData, FormData, Settings } from '../types';
+import { pushProfileToDynamoDB, getAllProfilesFromCloud } from './dynamodbSync';
+import { getAuth } from './googleAuth';
 
 const STORAGE_KEYS = {
   FORM_DATA: 'formbot_data',
@@ -20,6 +24,10 @@ const DEFAULT_SETTINGS: Settings = {
   darkMode: false,
   masterProfile: '',
   linkedInUrl: '',
+  enterpriseMode: false,
+  zapierWebhookUrl: '',
+  sendToZapierOnSubmit: false,
+  autoSyncEnabled: true, // Auto-sync from CRM by default
 };
 
 /**
@@ -37,6 +45,32 @@ export async function saveFormData(data: SavedFormData): Promise<void> {
     }
     
     await chrome.storage.local.set({ [STORAGE_KEYS.FORM_DATA]: allData });
+    
+    // Auto-sync to DynamoDB if user is signed in and auto-sync is enabled
+    try {
+      const settings = await getSettings();
+      const auth = await getAuth();
+      
+      console.log('📊 Sync check - Auth:', auth ? `✓ Signed in as ${auth.email}` : '✗ Not signed in');
+      console.log('📊 Sync check - AutoSync:', settings.autoSyncEnabled ? '✓ Enabled' : '✗ Disabled');
+      
+      if (!auth) {
+        console.log('⏭️ Skipping cloud sync: Not signed in with Google');
+        return;
+      }
+      
+      if (!settings.autoSyncEnabled) {
+        console.log('⏭️ Skipping cloud sync: Auto-sync disabled in settings');
+        return;
+      }
+      
+      console.log('🔄 Auto-syncing profile to DynamoDB...');
+      await pushProfileToDynamoDB(data);
+      console.log('✅ Profile synced to cloud');
+    } catch (syncError) {
+      // Don't fail the save if sync fails - just log it
+      console.warn('⚠️ Cloud sync failed (profile saved locally):', syncError);
+    }
   } catch (error) {
     console.error('Failed to save form data:', error);
     throw error;
@@ -45,9 +79,33 @@ export async function saveFormData(data: SavedFormData): Promise<void> {
 
 /**
  * Get all saved form data
+ * PRIMARY: Fetch from DynamoDB (single source of truth)
+ * FALLBACK: Use local cache if offline or not signed in
  */
 export async function getAllFormData(): Promise<SavedFormData[]> {
   try {
+    const auth = await getAuth();
+    
+    // If signed in, fetch from DynamoDB (single source of truth)
+    if (auth) {
+      console.log('📥 Fetching profiles from DynamoDB (single source of truth)...');
+      try {
+        const cloudProfiles = await getAllProfilesFromCloud();
+        
+        // Update local cache
+        await chrome.storage.local.set({ [STORAGE_KEYS.FORM_DATA]: cloudProfiles });
+        
+        console.log(`✅ Loaded ${cloudProfiles.length} profile(s) from cloud`);
+        return cloudProfiles;
+      } catch (cloudError) {
+        console.warn('⚠️ Failed to fetch from cloud, using local cache:', cloudError);
+        // Fall through to local cache
+      }
+    } else {
+      console.log('ℹ️ Not signed in, using local cache');
+    }
+    
+    // Fallback: Use local cache (offline mode or not signed in)
     const result = await chrome.storage.local.get(STORAGE_KEYS.FORM_DATA);
     const data = result[STORAGE_KEYS.FORM_DATA];
     

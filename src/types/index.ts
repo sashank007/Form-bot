@@ -91,6 +91,10 @@ export interface Settings {
   darkMode: boolean;
   masterProfile: string;
   linkedInUrl: string;
+  enterpriseMode: boolean;
+  zapierWebhookUrl: string;
+  sendToZapierOnSubmit: boolean;
+  autoSyncEnabled: boolean;
 }
 
 export interface ExtractedProfileData {
@@ -160,7 +164,8 @@ export type MessageType =
   | 'UNDO_FILL'
   | 'GET_FILL_STATUS'
   | 'SAVE_TEMPLATE'
-  | 'APPLY_TEMPLATE';
+  | 'APPLY_TEMPLATE'
+  | 'EXTRACT_FILLED_DATA';
 
 export interface FormDetectionResult {
   fields: DetectedField[];

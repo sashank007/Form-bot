@@ -9,11 +9,12 @@ import ResumeProfile from './components/ResumeProfile';
 import TemplateManager from './components/TemplateManager';
 import SecretsManager from './components/SecretsManager';
 import DocumentScanner from './components/DocumentScanner';
+import EnterpriseSettings from './components/EnterpriseSettings';
 import { Settings } from '../types';
 import { getSettings, saveSettings } from '../utils/storage';
 
 const Options: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'data' | 'templates' | 'secrets' | 'scanner' | 'resume' | 'settings'>('data');
+  const [activeTab, setActiveTab] = useState<'data' | 'templates' | 'secrets' | 'scanner' | 'resume' | 'enterprise' | 'settings'>('data');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [darkMode, setDarkMode] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -141,6 +142,16 @@ const Options: React.FC = () => {
               Resume Profile
             </button>
             <button
+              onClick={() => setActiveTab('enterprise')}
+              className={`py-4 px-2 border-b-2 font-medium transition-colors ${
+                activeTab === 'enterprise'
+                  ? 'border-primary-purple text-primary-purple'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+              }`}
+            >
+              {settings?.enterpriseMode ? '🏢' : ''} Enterprise
+            </button>
+            <button
               onClick={() => setActiveTab('settings')}
               className={`py-4 px-2 border-b-2 font-medium transition-colors ${
                 activeTab === 'settings'
@@ -161,6 +172,7 @@ const Options: React.FC = () => {
         {activeTab === 'secrets' && <SecretsManager />}
         {activeTab === 'scanner' && <DocumentScanner settings={settings} />}
         {activeTab === 'resume' && <ResumeProfile settings={settings} onChange={handleSettingsChange} />}
+        {activeTab === 'enterprise' && <EnterpriseSettings settings={settings} onChange={handleSettingsChange} />}
         {activeTab === 'settings' && <PrivacySettings settings={settings} onChange={handleSettingsChange} />}
       </main>
 

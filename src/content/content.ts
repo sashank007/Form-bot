@@ -17,6 +17,7 @@ import { validateFormData } from '../utils/validator';
 import { analyzeAllFieldsWithAI, applyAIAnalysisResults } from '../utils/aiComprehensiveAnalyzer';
 import { fillFieldWithEvents } from '../utils/eventSimulator';
 import { analyzeField } from '../utils/fieldPurposeIdentifier';
+import { sendToZapier, extractFilledFormData } from '../utils/zapierIntegration';
 
 let detectedFields: DetectedField[] = [];
 let formObserver: MutationObserver | null = null;
@@ -210,6 +211,11 @@ async function handleMessage(message: Message, sendResponse: (response?: any) =>
         fillPercentage: calculateFillPercentage(formFields),
         currentValues: getCurrentFormValues(formFields),
       });
+      break;
+      
+    case 'EXTRACT_FILLED_DATA':
+      const filledData = extractFilledFormData();
+      sendResponse({ data: filledData });
       break;
       
     default:
@@ -628,24 +634,135 @@ async function applyTemplate(templateId: string) {
  * Setup form submit validation
  */
 function setupSubmitValidation() {
+  console.log('━━━ SETTING UP SUBMIT VALIDATION ━━━');
+  
   // Find all forms on the page
   const forms = document.querySelectorAll('form');
+  console.log(`Found ${forms.length} form element(s) on page`);
   
-  forms.forEach(form => {
+  forms.forEach((form, index) => {
+    console.log(`  Attaching submit listener to form ${index + 1}:`, form);
     // Remove any existing listener
     form.removeEventListener('submit', handleFormSubmit);
     // Add new listener
     form.addEventListener('submit', handleFormSubmit);
   });
   
+  // Also catch submit buttons directly (backup method)
+  const submitButtons = document.querySelectorAll('button[type="submit"], input[type="submit"]');
+  console.log(`Found ${submitButtons.length} submit button(s)`);
+  
+  submitButtons.forEach((button, index) => {
+    console.log(`  Attaching click listener to submit button ${index + 1}:`, button);
+    button.addEventListener('click', (e) => {
+      console.log('🔘 SUBMIT BUTTON CLICKED:', button);
+      // The form submit event should fire, but log just in case
+    });
+  });
+  
+  // Listen for any button clicks that might submit (Google Forms uses custom buttons)
+  document.addEventListener('click', async (e) => {
+    const target = e.target as HTMLElement;
+    const text = target.textContent?.toLowerCase() || '';
+    const ariaLabel = target.getAttribute('aria-label')?.toLowerCase() || '';
+    
+    // Check if it's a submit-like button
+    if (text.includes('submit') || text.includes('next') || text.includes('continue') || 
+        ariaLabel.includes('submit') || ariaLabel.includes('next')) {
+      console.log('🔘 Possible submit button clicked:', target);
+      console.log('  Text:', text);
+      console.log('  Aria-label:', ariaLabel);
+      console.log('  Calling handlePossibleFormSubmit NOW...');
+      
+      // Call immediately (don't wait)
+      await handlePossibleFormSubmit();
+      
+      // Also try after a delay in case data isn't ready yet
+      setTimeout(async () => {
+        console.log('🔄 Delayed Zapier check (500ms after click)...');
+        await handlePossibleFormSubmit();
+      }, 500);
+    }
+  }, true);
+  
   console.log(`Form Bot: Monitoring ${forms.length} form(s) for submit validation`);
 }
 
 /**
- * Handle form submit - validate before allowing submission
+ * Handle possible form submit (for pages without form elements)
+ */
+async function handlePossibleFormSubmit() {
+  console.log('━━━ handlePossibleFormSubmit CALLED ━━━');
+  
+  const settings = await getSettings();
+  
+  console.log('Settings check:', {
+    enterpriseMode: settings.enterpriseMode,
+    sendToZapierOnSubmit: settings.sendToZapierOnSubmit,
+    webhookUrl: settings.zapierWebhookUrl ? 'SET' : 'NOT SET',
+  });
+  
+  if (settings.enterpriseMode && settings.sendToZapierOnSubmit && settings.zapierWebhookUrl) {
+    console.log('💡 Zapier is configured - extracting current page data...');
+    const formData = extractFilledFormData();
+    
+    if (Object.keys(formData).length > 0) {
+      console.log(`✅ Found ${Object.keys(formData).length} fields - sending to Zapier!`);
+      await sendToZapier(formData);
+    } else {
+      console.log('⚠️ No form data found to send (fields might be empty)');
+    }
+  } else {
+    console.log('❌ Zapier NOT configured:');
+    if (!settings.enterpriseMode) console.log('  - Enterprise mode is OFF');
+    if (!settings.sendToZapierOnSubmit) console.log('  - Send to Zapier on submit is OFF');
+    if (!settings.zapierWebhookUrl) console.log('  - Webhook URL is empty');
+    console.log('  Go to Settings → Enterprise to configure');
+  }
+}
+
+/**
+ * Handle form submit - validate before allowing submission AND send to Zapier
  */
 async function handleFormSubmit(event: Event) {
   const form = event.target as HTMLFormElement;
+  
+  console.log('━━━━━ FORM SUBMIT DETECTED ━━━━━');
+  console.log('Form:', form);
+  
+  // Check if Zapier integration is enabled
+  const settings = await getSettings();
+  console.log('Zapier Settings:', {
+    enterpriseMode: settings.enterpriseMode,
+    sendToZapierOnSubmit: settings.sendToZapierOnSubmit,
+    hasWebhookUrl: !!settings.zapierWebhookUrl,
+    webhookUrl: settings.zapierWebhookUrl ? settings.zapierWebhookUrl.substring(0, 50) + '...' : 'NOT SET',
+  });
+  
+  if (settings.enterpriseMode && settings.sendToZapierOnSubmit && settings.zapierWebhookUrl) {
+    console.log('🚀 Zapier integration is ENABLED - extracting form data...');
+    
+    // Extract and send form data to Zapier (non-blocking)
+    const formData = extractFilledFormData();
+    console.log('📊 Extracted form data:', formData);
+    console.log('📦 Field count:', Object.keys(formData).length);
+    
+    sendToZapier(formData).then(success => {
+      if (success) {
+        console.log('✅✅✅ Form data successfully sent to Zapier!');
+        showSuccessMessage('📤 Data sent to Zapier!');
+      } else {
+        console.log('❌ Failed to send to Zapier');
+      }
+    }).catch(err => {
+      console.error('❌ Zapier send error:', err);
+    });
+  } else {
+    console.log('⏭️ Zapier integration NOT enabled or not configured');
+    if (!settings.enterpriseMode) console.log('  Reason: Enterprise mode is OFF');
+    if (!settings.sendToZapierOnSubmit) console.log('  Reason: Send to Zapier on submit is OFF');
+    if (!settings.zapierWebhookUrl) console.log('  Reason: Webhook URL not configured');
+  }
   
   // Get all filled field values from the form
   const formData = new FormData(form);

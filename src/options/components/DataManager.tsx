@@ -16,6 +16,7 @@ const DataManager: React.FC = () => {
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [newFieldKey, setNewFieldKey] = useState('');
   const [newFieldValue, setNewFieldValue] = useState('');
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
 
   useEffect(() => {
     loadProfiles();
@@ -35,19 +36,34 @@ const DataManager: React.FC = () => {
   const handleSave = async () => {
     if (!editingId) return;
 
-    const profile: SavedFormData = {
-      id: editingId,
-      name: editingName,
-      data: editingData,
-      createdAt: profiles.find(p => p.id === editingId)?.createdAt || Date.now(),
-      updatedAt: Date.now(),
-    };
+    setSaveStatus('saving');
 
-    await saveFormData(profile);
-    setEditingId(null);
-    setEditingData({});
-    setEditingName('');
-    loadProfiles();
+    try {
+      const profile: SavedFormData = {
+        id: editingId,
+        name: editingName,
+        data: editingData,
+        createdAt: profiles.find(p => p.id === editingId)?.createdAt || Date.now(),
+        updatedAt: Date.now(),
+      };
+
+      await saveFormData(profile);
+      setSaveStatus('success');
+      
+      // Show success briefly then reset
+      setTimeout(() => {
+        setSaveStatus('idle');
+        setEditingId(null);
+        setEditingData({});
+        setEditingName('');
+      }, 1500);
+      
+      loadProfiles();
+    } catch (error) {
+      console.error('Failed to save profile:', error);
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    }
   };
 
   const handleCancel = () => {
@@ -230,9 +246,31 @@ const DataManager: React.FC = () => {
               className="text-xl font-bold bg-transparent border-b-2 border-gray-300 dark:border-gray-600 focus:border-primary-purple outline-none text-gray-900 dark:text-gray-100"
               placeholder="Profile Name"
             />
-            <div className="flex gap-2">
-              <button onClick={handleSave} className="btn-primary">Save</button>
+            <div className="flex gap-2 items-center">
+              <button 
+                onClick={handleSave} 
+                className="btn-primary"
+                disabled={saveStatus === 'saving'}
+              >
+                {saveStatus === 'saving' && (
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin inline-block mr-2"></div>
+                )}
+                {saveStatus === 'saving' ? 'Saving...' : 'Save'}
+              </button>
               <button onClick={handleCancel} className="btn-secondary">Cancel</button>
+              {saveStatus === 'success' && (
+                <span className="text-green-600 dark:text-green-400 text-sm font-medium flex items-center">
+                  <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                  </svg>
+                  Saved & Synced to Cloud
+                </span>
+              )}
+              {saveStatus === 'error' && (
+                <span className="text-red-600 dark:text-red-400 text-sm font-medium">
+                  ⚠️ Saved locally (cloud sync failed)
+                </span>
+              )}
             </div>
           </div>
 

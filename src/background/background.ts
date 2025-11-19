@@ -3,9 +3,61 @@
  */
 
 import { Message, FormDetectionResult } from '../types';
+import { startZapierPolling } from '../utils/zapierReceiver';
+import { getSettings } from '../utils/storage';
+import { syncFromDynamoDB } from '../utils/dynamodbSync';
+import { isSignedIn } from '../utils/googleAuth';
 
 // Track tabs with detected forms
 const tabsWithForms: Set<number> = new Set();
+
+// Start polling for Zapier data
+startZapierPolling((data) => {
+  console.log('📥 Background: New CRM data received via Zapier', data);
+  
+  // Notify all open tabs
+  chrome.tabs.query({}, (tabs) => {
+    tabs.forEach(tab => {
+      if (tab.id) {
+        chrome.tabs.sendMessage(tab.id, {
+          type: 'CRM_DATA_RECEIVED',
+          payload: data,
+        }).catch(() => {
+          // Tab might not have content script, ignore
+        });
+      }
+    });
+  });
+});
+
+// Lambda API Auto-Sync (every 10 seconds) - Automatic, no configuration needed
+setInterval(async () => {
+  const settings = await getSettings();
+  
+  if (settings.enterpriseMode && settings.autoSyncEnabled) {
+    const signedIn = await isSignedIn();
+    
+    if (signedIn) {
+      try {
+        const count = await syncFromDynamoDB({}); // Uses hardcoded Lambda URL
+        
+        if (count > 0) {
+          console.log(`✅ CRM auto-sync: ${count} new profile(s) created`);
+          
+          // Show notification
+          chrome.notifications?.create({
+            type: 'basic',
+            iconUrl: chrome.runtime.getURL('icons/formbot_icon.png'),
+            title: 'FormBot: New CRM Data',
+            message: `${count} new profile(s) synced from your CRM`,
+          });
+        }
+      } catch (error) {
+        console.error('CRM auto-sync failed:', error);
+      }
+    }
+  }
+}, 10000); // 10 seconds
 
 // Create context menu on install
 chrome.runtime.onInstalled.addListener(() => {
