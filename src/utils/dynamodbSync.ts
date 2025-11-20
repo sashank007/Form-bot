@@ -139,6 +139,17 @@ export async function pushProfileToDynamoDB(profile: SavedFormData, config: Dyna
     
     console.log('📡 Calling Lambda API:', apiUrl);
 
+    // Map profileType to source for DynamoDB
+    const sourceMap: Record<string, string> = {
+      'google-sheets': 'google-sheets',
+      'zapier': 'zapier',
+      'crm': 'crm',
+      'resume': 'resume',
+      'user': 'user',
+    };
+    
+    const source = sourceMap[profile.profileType || 'user'] || 'user';
+
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
@@ -149,7 +160,9 @@ export async function pushProfileToDynamoDB(profile: SavedFormData, config: Dyna
         profileId: profile.id,
         label: profile.name,
         fields: profile.data,
-        source: 'user',
+        source: source,
+        sourceId: profile.sourceId,
+        profileType: profile.profileType,
         isDefault: false,
       }),
     });
@@ -196,13 +209,28 @@ export async function getAllProfilesFromCloud(config: DynamoDBConfig = {}): Prom
     const profiles = data.profiles || [];
 
     // Convert to SavedFormData format
-    const savedProfiles: SavedFormData[] = profiles.map((profile: any) => ({
-      id: profile.profileId,
-      name: profile.label || 'Untitled Profile',
-      data: profile.fields || {},
-      createdAt: profile.createdAt || Date.now(),
-      updatedAt: profile.updatedAt || Date.now(),
-    }));
+    const savedProfiles: SavedFormData[] = profiles.map((profile: any) => {
+      // Parse fields if it's a JSON string
+      let fields = profile.fields || {};
+      if (typeof fields === 'string') {
+        try {
+          fields = JSON.parse(fields);
+        } catch (e) {
+          console.warn('Failed to parse fields JSON:', e);
+          fields = {};
+        }
+      }
+      
+      return {
+        id: profile.profileId,
+        profileType: profile.profileType || (profile.source === 'google-sheets' ? 'google-sheets' : profile.source === 'zapier' ? 'zapier' : profile.source === 'crm' ? 'crm' : 'user'),
+        sourceId: profile.sourceId,
+        name: profile.label || 'Untitled Profile',
+        data: fields,
+        createdAt: profile.createdAt || Date.now(),
+        updatedAt: profile.updatedAt || Date.now(),
+      };
+    });
 
     return savedProfiles;
   } catch (error) {

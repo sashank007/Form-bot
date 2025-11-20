@@ -22,11 +22,15 @@ export interface FormData {
   [key: string]: string;
 }
 
+export type ProfileType = 'user' | 'crm' | 'google-sheets' | 'zapier' | 'resume';
+
 export interface SavedFormData {
   id: string;
   name: string;
   data: FormData;
   secrets?: { [key: string]: string }; // Encrypted secrets for this profile
+  profileType?: ProfileType; // Type of profile (user-created, CRM, Google Sheets, etc.)
+  sourceId?: string; // Unique identifier from source (e.g., row ID, employee ID)
   createdAt: number;
   updatedAt: number;
 }

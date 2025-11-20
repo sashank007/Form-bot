@@ -4,16 +4,16 @@
   "version": "1.0.0",
   "description": "Intelligent form auto-fill extension with AI-powered field matching",
   "icons": {
-    "16": "icons/formbot_icon.png",
-    "48": "icons/formbot_icon.png",
-    "128": "icons/formbot_icon.png"
+    "16": "icons/formbot_beaver_transparent.png",
+    "48": "icons/formbot_beaver_transparent.png",
+    "128": "icons/formbot_beaver_transparent.png"
   },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
-      "16": "icons/formbot_icon.png",
-      "48": "icons/formbot_icon.png",
-      "128": "icons/formbot_icon.png"
+      "16": "icons/formbot_beaver_transparent.png",
+      "48": "icons/formbot_beaver_transparent.png",
+      "128": "icons/formbot_beaver_transparent.png"
     }
   },
   "background": {
@@ -28,21 +28,31 @@
       "run_at": "document_idle"
     }
   ],
-  "permissions": [
-    "storage",
-    "activeTab",
-    "scripting",
-    "contextMenus"
-  ],
   "host_permissions": [
     "<all_urls>"
   ],
   "options_page": "options.html",
   "web_accessible_resources": [
     {
-      "resources": ["icons/*", "pdf.worker.min.js"],
+      "resources": ["icons/*", "pdf.worker.min.js", "webhook-receiver.html"],
       "matches": ["<all_urls>"]
     }
-  ]
+  ],
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "contextMenus",
+    "notifications",
+    "identity",
+    "identity.email"
+  ],
+  "oauth2": {
+    "client_id": "783416055958-pvebr49o7t3lsh9sb5d9qol37f6tbj3b.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile"
+    ]
+  }
 }
 

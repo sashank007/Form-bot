@@ -47,7 +47,7 @@
 
 /* Form Bot field highlighting */
 .formbot-highlight {
-  outline: 2px solid #8B5CF6 !important;
+  outline: 2px solid #8B4513 !important;
   outline-offset: 2px !important;
   transition: outline 0.2s ease-in-out !important;
 }

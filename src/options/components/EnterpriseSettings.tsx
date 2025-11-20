@@ -8,6 +8,7 @@ import { testZapierWebhook } from '../../utils/zapierIntegration';
 import { getWebhookReceiverUrl } from '../../utils/zapierReceiver';
 import { signInWithGoogle, signOut, getAuth, UserAuth } from '../../utils/googleAuth';
 import { syncFromDynamoDB, testDynamoDBConnection, pushAllProfilesToCloud } from '../../utils/dynamodbSync';
+import { LAMBDA_API_URL } from '../../config/constants';
 
 interface EnterpriseSettingsProps {
   settings: Settings;
@@ -400,6 +401,36 @@ Example Item:
             <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">
               ⚡ Zapier Webhook Integration
             </h3>
+            
+            {/* Lambda Webhook URL for Receiving Data */}
+            <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg p-4 mb-4">
+              <h4 className="font-semibold text-purple-900 dark:text-purple-100 mb-2 flex items-center gap-2">
+                📥 Receive Data from Zapier (Lambda Webhook)
+              </h4>
+              <p className="text-sm text-purple-800 dark:text-purple-200 mb-3">
+                Use this URL in your Zapier Zap to send Google Sheets/CRM data to FormBot:
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={`${LAMBDA_API_URL}/api/webhook`}
+                  className="flex-1 px-3 py-2 border border-purple-300 dark:border-purple-700 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 font-mono text-xs"
+                />
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${LAMBDA_API_URL}/api/webhook`);
+                    alert('✅ Webhook URL copied to clipboard!');
+                  }}
+                  className="px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium transition-colors"
+                >
+                  Copy
+                </button>
+              </div>
+              <p className="text-xs text-purple-700 dark:text-purple-300 mt-2">
+                💡 Paste this URL in Zapier → Webhooks by Zapier → POST → URL field
+              </p>
+            </div>
             
             <div className="space-y-4">
               <div>

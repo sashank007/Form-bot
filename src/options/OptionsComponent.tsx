@@ -63,10 +63,26 @@ const Options: React.FC = () => {
     );
   }
 
+  const beaverIconUrl = chrome.runtime.getURL('icons/formbot_beaver_icon.png');
+
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div 
+      className="min-h-screen bg-gray-50 dark:bg-gray-900 relative"
+      style={{
+        backgroundImage: `url(${beaverIconUrl})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+        backgroundAttachment: 'fixed',
+      }}
+    >
+      {/* Overlay to ensure content readability */}
+      <div className="absolute inset-0 bg-gray-50/80 dark:bg-gray-900/85 pointer-events-none"></div>
+      
+      {/* Content wrapper */}
+      <div className="relative z-10">
       {/* Header */}
-      <header className="bg-gradient-primary text-white shadow-lg">
+      <header className="bg-gradient-primary text-white shadow-lg relative z-20">
         <div className="max-w-6xl mx-auto px-6 py-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
@@ -88,7 +104,7 @@ const Options: React.FC = () => {
       </header>
 
       {/* Tabs */}
-      <div className="bg-white dark:bg-gray-800 shadow">
+      <div className="bg-white dark:bg-gray-800 shadow relative z-20">
         <div className="max-w-6xl mx-auto px-6">
           <div className="flex space-x-8">
             <button
@@ -166,7 +182,7 @@ const Options: React.FC = () => {
       </div>
 
       {/* Content */}
-      <main className="max-w-6xl mx-auto px-6 py-8">
+      <main className="max-w-6xl mx-auto px-6 py-8 relative z-20">
         {activeTab === 'data' && <DataManager />}
         {activeTab === 'templates' && <TemplateManager />}
         {activeTab === 'secrets' && <SecretsManager />}
@@ -177,13 +193,14 @@ const Options: React.FC = () => {
       </main>
 
       {/* Footer */}
-      <footer className="mt-16 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+      <footer className="mt-16 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 relative z-20">
         <div className="max-w-6xl mx-auto px-6 py-6">
           <p className="text-sm text-gray-600 dark:text-gray-400 text-center">
             Form Bot v1.0.0 - All data stored locally
           </p>
         </div>
       </footer>
+      </div>
     </div>
   );
 };

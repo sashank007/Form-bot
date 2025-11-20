@@ -2,8 +2,8 @@
  * Zapier Data Receiver - Polls for incoming CRM data
  */
 
-import { saveFormData } from './storage';
-import { SavedFormData } from '../types';
+import { saveFormData, getAllFormData } from './storage';
+import { SavedFormData, ProfileType } from '../types';
 
 const POLL_INTERVAL = 5000; // 5 seconds
 const STORAGE_KEY = 'pending_zapier_data';
@@ -63,15 +63,75 @@ async function checkForPendingData(callback?: (data: any) => void): Promise<void
 }
 
 /**
- * Process CRM data and create profile
+ * Detect if data is from Google Sheets
+ */
+function isGoogleSheetsData(data: any): boolean {
+  // Check for Google Sheets indicators
+  const indicators = [
+    'spreadsheetId',
+    'sheetId',
+    'rowNumber',
+    'row',
+    'googleSheets',
+    'sheetName',
+    'spreadsheet',
+  ];
+  
+  const keys = Object.keys(data).map(k => k.toLowerCase());
+  return indicators.some(indicator => 
+    keys.some(key => key.includes(indicator.toLowerCase()))
+  ) || data.source === 'google-sheets' || data.source === 'googlesheets';
+}
+
+/**
+ * Get unique identifier for profile matching
+ */
+function getSourceId(data: any): string | null {
+  // Try common identifier fields
+  const idFields = [
+    'rowId',
+    'rowNumber',
+    'row',
+    'id',
+    'email', // Email is often unique
+    'employeeId',
+    'employee_id',
+    'recordId',
+    'record_id',
+  ];
+  
+  for (const field of idFields) {
+    if (data[field]) {
+      return String(data[field]);
+    }
+  }
+  
+  // Fallback: use email if available
+  if (data.email) {
+    return `email_${data.email}`;
+  }
+  
+  return null;
+}
+
+/**
+ * Process CRM data and create/update profile
  */
 async function processCRMData(data: any): Promise<void> {
-  console.log('🏢 Processing CRM data...');
+  const isGoogleSheets = isGoogleSheetsData(data);
+  const profileType: ProfileType = isGoogleSheets ? 'google-sheets' : 'zapier';
+  
+  console.log(`🏢 Processing ${isGoogleSheets ? 'Google Sheets' : 'CRM'} data...`);
   
   // Flatten the data
   const flattenedData: { [key: string]: string } = {};
   
   for (const [key, value] of Object.entries(data)) {
+    // Skip metadata fields
+    if (['source', 'spreadsheetId', 'sheetId', 'rowNumber', 'row'].includes(key)) {
+      continue;
+    }
+    
     if (value !== null && value !== undefined && value !== '') {
       if (typeof value === 'object') {
         flattenedData[key] = JSON.stringify(value);
@@ -84,25 +144,52 @@ async function processCRMData(data: any): Promise<void> {
   console.log('📊 Flattened data:', flattenedData);
   console.log('📦 Field count:', Object.keys(flattenedData).length);
 
-  // Create profile
+  // Get source ID for matching existing profiles
+  const sourceId = getSourceId(data);
+  let existingProfile: SavedFormData | null = null;
+  
+  if (sourceId) {
+    // Check if profile with this sourceId already exists
+    const allProfiles = await getAllFormData();
+    existingProfile = allProfiles.find(
+      p => p.sourceId === sourceId && p.profileType === profileType
+    ) || null;
+  }
+
+  // Generate profile name
+  let profileName: string;
+  if (isGoogleSheets) {
+    const name = data.name || 
+                 `${data.firstName || ''} ${data.lastName || ''}`.trim() ||
+                 data.email ||
+                 `Row ${data.rowNumber || data.row || 'Unknown'}`;
+    profileName = `Google Sheets: ${name}`;
+  } else {
+    profileName = `From CRM - ${new Date().toLocaleString()}`;
+  }
+
+  // Create or update profile
   const profile: SavedFormData = {
-    id: `crm_${Date.now()}`,
-    name: `From CRM - ${new Date().toLocaleString()}`,
+    id: existingProfile?.id || `${profileType}_${sourceId || Date.now()}`,
+    name: profileName,
     data: flattenedData,
-    createdAt: Date.now(),
+    profileType,
+    sourceId: sourceId || undefined,
+    createdAt: existingProfile?.createdAt || Date.now(),
     updatedAt: Date.now(),
   };
 
   await saveFormData(profile);
   
-  console.log('✅ Profile created from CRM data:', profile.name);
+  const action = existingProfile ? 'updated' : 'created';
+  console.log(`✅ Profile ${action} from ${isGoogleSheets ? 'Google Sheets' : 'CRM'} data:`, profile.name);
 
   // Show notification
   chrome.notifications?.create({
     type: 'basic',
-    iconUrl: chrome.runtime.getURL('icons/formbot_icon.png'),
-    title: 'FormBot: CRM Data Received',
-    message: `Created profile "${profile.name}" with ${Object.keys(flattenedData).length} fields`,
+    iconUrl: chrome.runtime.getURL('icons/formbot_beaver_transparent.png'),
+    title: `FormBot: ${isGoogleSheets ? 'Google Sheets' : 'CRM'} Data ${action === 'updated' ? 'Updated' : 'Received'}`,
+    message: `${action === 'updated' ? 'Updated' : 'Created'} profile "${profile.name}" with ${Object.keys(flattenedData).length} fields`,
   });
 }
 

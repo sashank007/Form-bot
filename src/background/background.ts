@@ -47,7 +47,7 @@ setInterval(async () => {
           // Show notification
           chrome.notifications?.create({
             type: 'basic',
-            iconUrl: chrome.runtime.getURL('icons/formbot_icon.png'),
+            iconUrl: chrome.runtime.getURL('icons/formbot_beaver_transparent.png'),
             title: 'FormBot: New CRM Data',
             message: `${count} new profile(s) synced from your CRM`,
           });

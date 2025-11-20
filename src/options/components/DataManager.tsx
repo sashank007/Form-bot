@@ -3,7 +3,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { SavedFormData, FormData } from '../../types';
+import { SavedFormData, FormData, ProfileType } from '../../types';
 import { getAllFormData, saveFormData, deleteFormData, exportData, importData } from '../../utils/storage';
 import { PROFILE_TEMPLATES, createProfileFromTemplate } from '../../utils/profileTemplates';
 
@@ -20,6 +20,20 @@ const DataManager: React.FC = () => {
 
   useEffect(() => {
     loadProfiles();
+    
+    // Listen for storage changes to refresh when new profiles are added/updated
+    const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }) => {
+      if (changes.formbot_data) {
+        console.log('📥 Profile data changed, refreshing...');
+        loadProfiles();
+      }
+    };
+    
+    chrome.storage.onChanged.addListener(handleStorageChange);
+    
+    return () => {
+      chrome.storage.onChanged.removeListener(handleStorageChange);
+    };
   }, []);
 
   const loadProfiles = async () => {
@@ -166,6 +180,47 @@ const DataManager: React.FC = () => {
 
   const commonFieldKeys = commonFields.map(f => f.key);
   const customFields = Object.entries(editingData).filter(([key]) => !commonFieldKeys.includes(key));
+
+  const getProfileTypeBadge = (profileType?: ProfileType) => {
+    if (!profileType || profileType === 'user') return null;
+    
+    const badges: Record<ProfileType, { label: string; color: string; bgColor: string }> = {
+      'google-sheets': { 
+        label: 'Google Sheets', 
+        color: 'text-green-700 dark:text-green-300',
+        bgColor: 'bg-green-100 dark:bg-green-900/30'
+      },
+      'crm': { 
+        label: 'CRM', 
+        color: 'text-blue-700 dark:text-blue-300',
+        bgColor: 'bg-blue-100 dark:bg-blue-900/30'
+      },
+      'zapier': { 
+        label: 'Zapier', 
+        color: 'text-purple-700 dark:text-purple-300',
+        bgColor: 'bg-purple-100 dark:bg-purple-900/30'
+      },
+      'resume': { 
+        label: 'Resume', 
+        color: 'text-orange-700 dark:text-orange-300',
+        bgColor: 'bg-orange-100 dark:bg-orange-900/30'
+      },
+      'user': { 
+        label: 'User', 
+        color: 'text-gray-700 dark:text-gray-300',
+        bgColor: 'bg-gray-100 dark:bg-gray-900/30'
+      },
+    };
+    
+    const badge = badges[profileType];
+    if (!badge) return null;
+    
+    return (
+      <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${badge.color} ${badge.bgColor} border border-current/20`}>
+        {badge.label}
+      </span>
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -388,9 +443,15 @@ const DataManager: React.FC = () => {
             <div key={profile.id} className="bg-white dark:bg-gray-800 rounded-card shadow p-6 hover:shadow-lg transition-shadow">
               <div className="flex justify-between items-start">
                 <div className="flex-1">
-                  <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">{profile.name}</h3>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">{profile.name}</h3>
+                    {getProfileTypeBadge(profile.profileType)}
+                  </div>
                   <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                     Last updated: {new Date(profile.updatedAt).toLocaleDateString()}
+                    {profile.profileType === 'google-sheets' && profile.sourceId && (
+                      <span className="ml-2 text-xs">• Auto-synced</span>
+                    )}
                   </p>
                   <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
                     {Object.entries(profile.data).slice(0, 6).map(([key, value]) => (

@@ -66,6 +66,14 @@ Resources:
             Method: GET
             RestApiId: !Ref FormBotAPI
         
+        # Zapier Webhook Endpoint
+        Webhook:
+          Type: Api
+          Properties:
+            Path: /api/webhook
+            Method: POST
+            RestApiId: !Ref FormBotAPI
+        
         # Health Check
         Health:
           Type: Api
