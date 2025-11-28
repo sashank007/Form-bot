@@ -4,26 +4,33 @@
 
 import { FormField, DetectedField, FormData, FieldType } from '../types';
 import { classifyField, getConfidenceLevel, normalizeString } from '../utils/fieldClassifier';
+import { matchFieldIntelligently } from '../utils/intelligentMatcher';
 
 /**
  * Match form fields with saved data
  */
-export function matchFields(
+export async function matchFields(
   fields: FormField[],
   savedData: FormData
-): DetectedField[] {
+): Promise<DetectedField[]> {
   const detectedFields: DetectedField[] = [];
-  const availableKeys = Object.keys(savedData);
+  
+  // Flatten data structure first (e.g., Google Sheets rows format)
+  const flattenedData = flattenDataStructure(savedData);
+  const availableKeys = Object.keys(flattenedData);
+  
+  console.log(`📊 [MATCH] Flattened data keys: ${availableKeys.slice(0, 10).join(', ')}... (${availableKeys.length} total)`);
 
-  for (const field of fields) {
+  // Process fields in parallel for better performance
+  const matchPromises = fields.map(async (field) => {
     // Skip password fields
     if (field.type === 'password') {
-      detectedFields.push({
+      return {
         field,
-        fieldType: 'password',
+        fieldType: 'password' as FieldType,
         confidence: 0,
-      });
-      continue;
+        matchedKey: undefined,
+      };
     }
 
     // Classify the field
@@ -36,50 +43,74 @@ export function matchFields(
       field.ariaLabel
     );
 
-    // Try to find matching data
-    const matchResult = findMatchingData(
+    // Try to find matching data (using flattened data)
+    const matchResult = await findMatchingData(
       field,
       fieldType,
       availableKeys,
-      savedData
+      flattenedData
     );
 
-    detectedFields.push({
+    return {
       field,
       fieldType,
       confidence: matchResult.confidence,
       matchedKey: matchResult.matchedKey,
-    });
-  }
+    };
+  });
 
-  return detectedFields;
+  const results = await Promise.all(matchPromises);
+  return results;
 }
 
 /**
  * Find matching data for a field
  */
-function findMatchingData(
+async function findMatchingData(
   field: FormField,
   fieldType: FieldType,
   availableKeys: string[],
   savedData: FormData
-): { matchedKey?: string; confidence: number } {
-  // Strategy 1: Exact key match
+): Promise<{ matchedKey?: string; confidence: number }> {
+  // Strategy 1: Exact key match (fastest, highest confidence)
   const exactMatch = findExactMatch(field, availableKeys);
   if (exactMatch) {
     return { matchedKey: exactMatch, confidence: 100 };
   }
 
-  // Strategy 2: Field type match
-  const typeMatch = findTypeMatch(fieldType, availableKeys, savedData);
+  // Flatten data structure first (e.g., Google Sheets rows format)
+  const flattenedData = flattenDataStructure(savedData);
+  const flattenedKeys = Object.keys(flattenedData);
+  
+  // Strategy 2: Intelligent matching (Redis → Local Cache → AI)
+  // Only use if fuzzy match confidence would be low (< 80%)
+  const fuzzyPreview = findFuzzyMatch(field, flattenedKeys, flattenedData);
+  const shouldUseIntelligent = !fuzzyPreview || fuzzyPreview.confidence < 80;
+  
+  if (shouldUseIntelligent) {
+    try {
+      const intelligentMatch = await matchFieldIntelligently(field, flattenedKeys, flattenedData);
+      if (intelligentMatch.matchedKey && intelligentMatch.confidence > 0) {
+        return {
+          matchedKey: intelligentMatch.matchedKey,
+          confidence: intelligentMatch.confidence,
+        };
+      }
+    } catch (error) {
+      console.warn('Intelligent matching failed, falling back:', error);
+      // Fall through to other strategies
+    }
+  }
+
+  // Strategy 3: Field type match (use flattened keys)
+  const typeMatch = findTypeMatch(fieldType, flattenedKeys, flattenedData);
   if (typeMatch) {
     return typeMatch;
   }
 
-  // Strategy 3: Fuzzy match
-  const fuzzyMatch = findFuzzyMatch(field, availableKeys, savedData);
-  if (fuzzyMatch) {
-    return fuzzyMatch;
+  // Strategy 4: Fuzzy match (fallback)
+  if (fuzzyPreview) {
+    return fuzzyPreview;
   }
 
   return { confidence: 0 };
@@ -372,6 +403,31 @@ function calculateSimilarity(str1: string, str2: string): number {
 }
 
 /**
+ * Flatten nested data structures (e.g., {rows: [{key: value}]} -> {key: value})
+ */
+function flattenDataStructure(data: FormData): FormData {
+  // If data has a 'rows' key with an array, flatten it
+  if (data.rows && Array.isArray(data.rows) && data.rows.length > 0) {
+    // Merge all rows into a single object (later rows override earlier ones)
+    const flattened: FormData = {};
+    for (const row of data.rows) {
+      if (typeof row === 'object' && row !== null) {
+        Object.assign(flattened, row);
+      }
+    }
+    // Also include any top-level keys that aren't 'rows'
+    for (const key in data) {
+      if (key !== 'rows' && !(key in flattened)) {
+        flattened[key] = data[key];
+      }
+    }
+    return flattened;
+  }
+  
+  return data;
+}
+
+/**
  * Get fill value for a field with smart formatting
  */
 export function getFillValue(
@@ -380,11 +436,23 @@ export function getFillValue(
   matchedKey: string | undefined,
   savedData: FormData
 ): string {
-  if (!matchedKey || !savedData[matchedKey]) {
+  if (!matchedKey) {
     return '';
   }
 
-  let value = savedData[matchedKey];
+  // Flatten nested data structures (e.g., Google Sheets rows format)
+  const flattenedData = flattenDataStructure(savedData);
+  
+  if (!flattenedData[matchedKey]) {
+    return '';
+  }
+
+  let value = flattenedData[matchedKey];
+  
+  // Convert to string if it's not already
+  if (typeof value !== 'string') {
+    value = String(value);
+  }
 
   // Format based on field type
   switch (fieldType) {

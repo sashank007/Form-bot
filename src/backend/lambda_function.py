@@ -9,12 +9,25 @@ import time
 from typing import Dict, Any, Optional
 import boto3
 from boto3.dynamodb.conditions import Key, Attr
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError
+from botocore.config import Config
 from decimal import Decimal
+import urllib.request
+import urllib.parse
 
-# Initialize DynamoDB with two tables
-dynamodb = boto3.resource('dynamodb')
-dynamodb_client = boto3.client('dynamodb')
+# Redis client (lazy initialization)
+redis_client = None
+REDIS_TTL = 365 * 24 * 60 * 60  # 365 days in seconds
+
+# Initialize DynamoDB with two tables (with timeout config)
+# Note: If Lambda is in VPC with NAT Gateway, these timeouts may need to be higher
+dynamodb_config = Config(
+    connect_timeout=10,
+    read_timeout=10,
+    retries={'max_attempts': 2, 'mode': 'standard'}
+)
+dynamodb = boto3.resource('dynamodb', config=dynamodb_config)
+dynamodb_client = boto3.client('dynamodb', config=dynamodb_config)
 users_table_name = os.environ.get('USERS_TABLE', 'formbot-users')
 profiles_table_name = os.environ.get('PROFILES_TABLE', 'formbot-profiles')
 
@@ -28,10 +41,11 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     through API Gateway.
     """
     try:
-        print(f"Received event: {json.dumps(event)}")
+        print(f"🔵 [LAMBDA] Received event: {json.dumps(event, default=str)}")
         
         # Handle OPTIONS requests for CORS
         if event.get('httpMethod') == 'OPTIONS':
+            print("✅ [LAMBDA] Handling OPTIONS request")
             return create_response(200, {})
         
         # Get HTTP method and path
@@ -48,7 +62,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         else:
             path = raw_path
         
-        print(f"Method: {http_method}, Path: {path}")
+        print(f"🔵 [LAMBDA] Method: {http_method}, Path: {path}, Raw path: {raw_path}")
         
         # Route to appropriate handler
         if path == '/api/user/register' and http_method == 'POST':
@@ -77,6 +91,39 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         elif path == '/api/user/register-by-email' and http_method == 'POST':
             return handle_email_registration(event, context)
+        
+        elif path == '/api/field-mapping' and http_method == 'POST':
+            # Single POST endpoint handles both get and store operations
+            # Check body to determine action
+            try:
+                body_str = event.get('body', '{}')
+                print(f"🔵 [LAMBDA] Field mapping request body: {body_str}")
+                
+                if not body_str:
+                    body_str = '{}'
+                
+                body = json.loads(body_str)
+                action = body.get('action', 'get')
+                
+                print(f"🔵 [LAMBDA] Field mapping action: {action}")
+                
+                if action == 'store' and body.get('matchedKey'):
+                    print("🔵 [LAMBDA] Routing to store handler")
+                    return handle_post_field_mapping(event, context)
+                else:
+                    print("🔵 [LAMBDA] Routing to get handler")
+                    return handle_get_field_mapping(event, context)
+            except json.JSONDecodeError as e:
+                print(f"❌ [LAMBDA] JSON decode error: {str(e)}, body: {event.get('body', '')}")
+                return create_response(400, {'error': 'Invalid JSON body', 'details': str(e)})
+            except Exception as e:
+                print(f"❌ [LAMBDA] Error in field-mapping routing: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return create_response(500, {'error': 'Internal routing error', 'details': str(e)})
+        
+        elif path == '/api/batch-field-mapping' and http_method == 'POST':
+            return handle_batch_field_mapping(event, context)
         
         elif path == '/health':
             return health_check()
@@ -266,6 +313,7 @@ def handle_get_profiles(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         print(f"Fetching profiles for user: {user_id} since: {since}")
         
         # Query using GSI on userId
+        query_start = time.time()
         try:
             if since > 0:
                 # Try query with both userId and updatedAt
@@ -292,18 +340,45 @@ def handle_get_profiles(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     IndexName='userId-index',
                     KeyConditionExpression=Key('userId').eq(user_id)
                 )
+            query_latency = (time.time() - query_start) * 1000
+            print(f"⏱️ [DynamoDB] Query completed in {query_latency:.2f}ms")
+        except (ConnectTimeoutError, ReadTimeoutError) as timeout_error:
+            query_latency = (time.time() - query_start) * 1000
+            print(f"❌ [DynamoDB] Connection timeout after {query_latency:.2f}ms: {str(timeout_error)}")
+            print(f"❌ [DynamoDB] This usually means Lambda is in VPC without DynamoDB VPC endpoint")
+            print(f"❌ [DynamoDB] Solution: Add DynamoDB VPC endpoint (see VPC_ENDPOINT_SETUP.md)")
+            print(f"❌ [DynamoDB] Quick fix: Run 'python find_vpc_config.py' to get VPC details")
+            return create_response(503, {
+                'error': 'DynamoDB connection timeout',
+                'message': 'Unable to connect to DynamoDB. Check VPC configuration.',
+                'details': 'Lambda may need DynamoDB VPC endpoint or NAT Gateway'
+            })
         except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            error_msg = str(e)
+            print(f"❌ [DynamoDB] ClientError: {error_code} - {error_msg}")
             if 'ValidationException' in str(e) and ('index' in str(e).lower() or 'does not exist' in str(e).lower()):
                 # Index doesn't exist - fallback to scan (slower but works)
                 print("⚠️ userId-index not found, using scan fallback")
                 print("   Run add_userid_index.py to add the index for better performance")
-                response = profiles_table.scan(
-                    FilterExpression=Attr('userId').eq(user_id)
-                )
-                # Filter by updatedAt if needed
-                if since > 0:
-                    items = response.get('Items', [])
-                    response['Items'] = [item for item in items if item.get('updatedAt', 0) > since]
+                try:
+                    scan_start = time.time()
+                    response = profiles_table.scan(
+                        FilterExpression=Attr('userId').eq(user_id)
+                    )
+                    scan_latency = (time.time() - scan_start) * 1000
+                    print(f"⏱️ [DynamoDB] Scan completed in {scan_latency:.2f}ms")
+                    # Filter by updatedAt if needed
+                    if since > 0:
+                        items = response.get('Items', [])
+                        response['Items'] = [item for item in items if item.get('updatedAt', 0) > since]
+                except (ConnectTimeoutError, ReadTimeoutError) as scan_timeout:
+                    scan_latency = (time.time() - scan_start) * 1000 if 'scan_start' in locals() else 0
+                    print(f"❌ [DynamoDB] Scan timeout after {scan_latency:.2f}ms")
+                    return create_response(503, {
+                        'error': 'DynamoDB connection timeout',
+                        'message': 'Unable to connect to DynamoDB. Check VPC configuration.'
+                    })
             else:
                 raise
         
@@ -957,6 +1032,1068 @@ def create_response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
         },
         'body': json.dumps(body)
     }
+
+
+def get_redis_client():
+    """Get or create Redis client with connection pooling"""
+    global redis_client
+    
+    if redis_client is not None:
+        try:
+            # Test existing connection
+            redis_client.ping()
+            return redis_client
+        except Exception as e:
+            print(f"⚠️ [REDIS] Existing connection failed, reconnecting: {str(e)}")
+            redis_client = None
+    
+    # Try to use valkey library first (optimized for Valkey), fallback to redis
+    valkey_client = None
+    redis_client_lib = None
+    
+    try:
+        import valkey
+        valkey_client = valkey
+        print("✅ [REDIS] Using valkey-py library (optimized for Valkey)")
+    except ImportError:
+        try:
+            import redis
+            redis_client_lib = redis
+            print("✅ [REDIS] Using redis library (Valkey-compatible)")
+        except ImportError as e:
+            print(f"❌ [REDIS] Neither valkey nor redis library installed: {str(e)}")
+            print("❌ [REDIS] Install with: pip install valkey OR pip install redis>=5.0.0")
+            return None
+    
+    # Use valkey if available, otherwise use redis
+    client_lib = valkey_client if valkey_client else redis_client_lib
+    
+    try:
+        # Get Redis endpoint from environment variables
+        # Default to Valkey serverless cache endpoint (can be overridden via env vars)
+        redis_host = os.environ.get('REDIS_HOST', 'formbot-redis-gz9sjn.serverless.use1.cache.amazonaws.com')
+        redis_port = int(os.environ.get('REDIS_PORT', 6379))
+        redis_password = os.environ.get('REDIS_PASSWORD', '')
+        # SSL enabled by default for AWS ElastiCache/Valkey serverless cache
+        redis_ssl = os.environ.get('REDIS_SSL', 'true').lower() == 'true'
+        
+        print(f"🔌 [REDIS] Attempting connection to {redis_host}:{redis_port} (SSL: {redis_ssl})...")
+        
+        # Configure SSL for AWS ElastiCache/Valkey serverless cache
+        # AWS ElastiCache uses self-signed certificates, so we disable verification
+        # This is safe because we're connecting within AWS VPC
+        ssl_cert_reqs = None
+        if redis_ssl:
+            try:
+                import ssl
+                # Disable certificate verification for AWS ElastiCache self-signed certs
+                ssl_cert_reqs = ssl.CERT_NONE
+                print("🔒 [REDIS] SSL enabled with certificate verification disabled (AWS ElastiCache)")
+            except Exception as ssl_error:
+                print(f"⚠️ [REDIS] SSL configuration failed: {str(ssl_error)}, using basic SSL")
+                ssl_cert_reqs = None
+        
+        # Create client (Valkey or Redis) with connection pooling and shorter timeouts
+        if valkey_client:
+            # Use Valkey client
+            redis_client = valkey.Valkey(
+                host=redis_host,
+                port=redis_port,
+                password=redis_password if redis_password else None,
+                ssl=redis_ssl,
+                ssl_cert_reqs=ssl_cert_reqs,
+                ssl_ca_certs=None,
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_timeout=5,
+                retry_on_timeout=True,
+                health_check_interval=30,
+                socket_keepalive=True,
+                socket_keepalive_options={}
+            )
+        else:
+            # Use Redis client (Valkey-compatible)
+            redis_client = redis.Redis(
+                host=redis_host,
+                port=redis_port,
+                password=redis_password if redis_password else None,
+                ssl=redis_ssl,
+                ssl_cert_reqs=ssl_cert_reqs,
+                ssl_ca_certs=None,
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_timeout=5,
+                retry_on_timeout=True,
+                health_check_interval=30,
+                socket_keepalive=True,
+                socket_keepalive_options={}
+            )
+        
+        # Test connection with thread-based timeout to prevent hanging
+        print(f"🔌 [REDIS] Testing connection (timeout: 5s)...")
+        connect_start = time.time()
+        
+        # Use threading to enforce timeout
+        import threading
+        connection_result = {'success': False, 'error': None, 'exception': None, 'completed': False}
+        
+        def attempt_connection():
+            try:
+                redis_client.ping()
+                connection_result['success'] = True
+                connection_result['completed'] = True
+            except Exception as e:
+                connection_result['error'] = str(e)
+                connection_result['exception'] = e
+                connection_result['completed'] = True
+        
+        # Start connection attempt in thread
+        thread = threading.Thread(target=attempt_connection)
+        thread.daemon = True
+        thread.start()
+        
+        # Wait with timeout
+        thread.join(timeout=5.0)
+        
+        connect_latency = (time.time() - connect_start) * 1000
+        
+        # Force flush stdout to ensure logs are written
+        import sys
+        sys.stdout.flush()
+        
+        if thread.is_alive():
+            # Thread still running = timeout
+            print(f"❌ [REDIS] Connection timeout after {connect_latency:.2f}ms - thread still running")
+            print(f"❌ [REDIS] Connection is hanging - this indicates a network/VPC issue")
+            print(f"❌ [REDIS] Troubleshooting:")
+            print(f"   1. Lambda MUST be in same VPC as Redis serverless cache")
+            print(f"   2. Lambda security group must allow outbound on port 6379")
+            print(f"   3. Redis security group must allow inbound from Lambda SG")
+            print(f"   4. Check VPC configuration: Lambda → Configuration → VPC")
+            print(f"   5. Redis endpoint: {redis_host}:{redis_port}")
+            print(f"   6. Verify Lambda has VPC configuration set")
+            print(f"   7. Check CloudWatch VPC logs for connection attempts")
+            sys.stdout.flush()
+            redis_client = None
+            return None
+        
+        # Check if connection attempt completed
+        if not connection_result['completed']:
+            print(f"❌ [REDIS] Connection attempt did not complete (latency: {connect_latency:.2f}ms)")
+            print(f"❌ [REDIS] This may indicate a VPC/network configuration issue")
+            sys.stdout.flush()
+            redis_client = None
+            return None
+        
+        # Check result
+        if connection_result['success']:
+            print(f"✅ [REDIS] Connected successfully (latency: {connect_latency:.2f}ms) - {redis_host}:{redis_port}")
+            sys.stdout.flush()
+            return redis_client
+        else:
+            # Connection failed with error
+            error = connection_result['exception']
+            error_type = type(error).__name__ if error else 'Unknown'
+            error_msg = connection_result['error'] or 'Unknown error'
+            
+            print(f"❌ [REDIS] Connection failed after {connect_latency:.2f}ms: {error_msg}")
+            print(f"❌ [REDIS] Error type: {error_type}")
+            
+            # Check for specific error types
+            if error:
+                if 'ConnectionError' in error_type or 'Connection' in str(type(error)):
+                    print(f"❌ [REDIS] ConnectionError - network/VPC issue likely")
+                elif 'Timeout' in error_type or 'timeout' in str(error).lower():
+                    print(f"❌ [REDIS] TimeoutError - connection timed out")
+                else:
+                    print(f"❌ [REDIS] Unexpected error type: {error_type}")
+            
+            print(f"❌ [REDIS] Troubleshooting:")
+            print(f"   1. Lambda MUST be in same VPC as Redis serverless cache")
+            print(f"   2. Verify security groups allow traffic on port 6379")
+            print(f"   3. Check Redis endpoint: {redis_host}:{redis_port}")
+            print(f"   4. Verify Redis serverless cache is active")
+            print(f"   5. Check Lambda VPC configuration in AWS Console")
+            sys.stdout.flush()
+            
+            redis_client = None
+            return None
+            
+    except Exception as redis_error:
+        # Handle both redis.RedisError and other exceptions
+        error_type = type(redis_error).__name__
+        error_msg = str(redis_error)
+        
+        print(f"❌ [REDIS] Error creating Redis client: {error_msg}")
+        print(f"❌ [REDIS] Error type: {error_type}")
+        
+        # Check if it's a connection-related error
+        if 'Connection' in error_type or 'connection' in error_msg.lower():
+            print(f"❌ [REDIS] Connection error - likely VPC/network issue")
+            print(f"❌ [REDIS] Lambda MUST be in same VPC as Redis serverless cache")
+        
+        import traceback
+        traceback.print_exc()
+        
+        # Force flush to ensure logs are written before Lambda times out
+        import sys
+        sys.stdout.flush()
+        
+        redis_client = None
+        return None
+        print(f"❌ [REDIS] Error type: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
+        redis_client = None
+        return None
+
+
+def handle_get_field_mapping(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Get field mapping from Redis cache
+    POST /api/field-mapping
+    Body: {"fieldSignature": "abc123", "action": "get"}
+    """
+    try:
+        body_str = event.get('body', '{}')
+        print(f"🔍 [API] GET handler - Raw body: {body_str}")
+        
+        if not body_str:
+            body_str = '{}'
+        
+        body = json.loads(body_str)
+        field_signature = body.get('fieldSignature')
+        
+        print(f"🔍 [API] POST /api/field-mapping (action: get) - fieldSignature: {field_signature}")
+        
+        if not field_signature:
+            print("❌ [API] POST /api/field-mapping - Missing fieldSignature in body")
+            return create_response(400, {
+                'error': 'fieldSignature required in body',
+                'received_body': body
+            })
+        
+        redis_cli = get_redis_client()
+        if not redis_cli:
+            error_msg = 'Redis connection failed - check CloudWatch logs for details'
+            print(f"❌ [API] POST /api/field-mapping - Redis not available: {error_msg}")
+            return create_response(503, {
+                'error': 'Redis cache unavailable',
+                'message': error_msg,
+                'details': 'Check Lambda CloudWatch logs for Redis connection errors'
+            })
+        
+        # Get from Redis
+        key = f'field_mapping:{field_signature}'
+        print(f"📥 [REDIS] GET {key}")
+        start_time = time.time()
+        cached_value = redis_cli.get(key)
+        redis_latency = (time.time() - start_time) * 1000
+        
+        if not cached_value:
+            print(f"❌ [REDIS] Cache MISS for {key} (latency: {redis_latency:.2f}ms)")
+            
+            # If field info is provided, try AI matching and store result
+            field_label = body.get('fieldLabel', '')
+            field_name = body.get('fieldName', '')
+            available_keys = body.get('availableKeys', [])
+            openai_key = body.get('openAIKey', '')
+            section_header = body.get('sectionHeader', '')
+            nearby_fields = body.get('nearbyFields', [])
+            form_purpose = body.get('formPurpose', '')
+            
+            # Only attempt AI matching if we have the required info
+            if field_label and available_keys and openai_key:
+                # Check remaining Lambda time to avoid timeout
+                if context and hasattr(context, 'get_remaining_time_in_millis'):
+                    remaining_ms = context.get_remaining_time_in_millis()
+                    if remaining_ms < 5000:
+                        print(f"⏱️ [AI] Skipping AI matching - only {remaining_ms}ms remaining (need ~8s)")
+                        return create_response(504, {'error': 'Insufficient time remaining for AI matching'})
+                    print(f"⏱️ [AI] Lambda has {remaining_ms}ms remaining")
+                
+                print(f"🤖 [AI] Cache miss - attempting AI matching for field: {field_label}")
+                print(f"🤖 [AI] Available keys: {available_keys[:10]}... ({len(available_keys)} total)")
+                if section_header:
+                    print(f"🤖 [AI] Section context: {section_header}")
+                if nearby_fields:
+                    print(f"🤖 [AI] Nearby fields: {len(nearby_fields)} fields")
+                
+                matching_start = time.time()
+                ai_match = match_field_with_ai_backend(
+                    field_label, field_name, available_keys, openai_key,
+                    section_header, nearby_fields, form_purpose, context
+                )
+                matching_latency = (time.time() - matching_start) * 1000
+                print(f"⏱️ [AI] AI matching completed in {matching_latency:.2f}ms")
+                
+                if ai_match and ai_match.get('matchedKey'):
+                    matched_key = ai_match['matchedKey']
+                    confidence = ai_match.get('confidence', 0)
+                    
+                    print(f"✅ [AI] AI match found: {field_signature} → {matched_key} (confidence: {confidence})")
+                    
+                    # Store ALL AI matches in cache (even if confidence < 80)
+                    # Lower confidence matches are still useful for future reference
+                    print(f"💾 [AI] Storing AI match in cache: {field_signature} → {matched_key} (confidence: {confidence})")
+                    
+                    mapping_data = {
+                        'matchedKey': matched_key,
+                        'confidence': confidence,
+                        'usageCount': 0,
+                        'createdAt': int(time.time()),
+                        'updatedAt': int(time.time()),
+                        'fieldLabel': field_label,
+                        'fieldName': field_name,
+                        'source': 'ai'
+                    }
+                    
+                    # Store in Redis
+                    try:
+                        redis_cli.set(key, json.dumps(mapping_data), ex=REDIS_TTL)
+                        print(f"✅ [AI] Successfully stored AI match in Redis cache: {field_signature} → {matched_key}")
+                    except Exception as store_error:
+                        print(f"❌ [AI] Failed to store in Redis: {str(store_error)}")
+                        import traceback
+                        traceback.print_exc()
+                    
+                    return create_response(200, {
+                        'matchedKey': matched_key,
+                        'confidence': confidence,
+                        'usageCount': 0,
+                        'source': 'ai',
+                        'cached': True
+                    })
+                else:
+                    if ai_match is None:
+                        print(f"❌ [AI] AI matching returned None for {field_signature}")
+                    elif not ai_match.get('matchedKey'):
+                        print(f"❌ [AI] AI matching found no matchedKey for {field_signature}")
+                    else:
+                        print(f"❌ [AI] AI matching failed for {field_signature}: {ai_match}")
+            else:
+                missing = []
+                if not field_label:
+                    missing.append('fieldLabel')
+                if not available_keys:
+                    missing.append('availableKeys')
+                if not openai_key:
+                    missing.append('openAIKey')
+                print(f"⏭️ [AI] Skipping AI matching - missing: {', '.join(missing)}")
+            
+            return create_response(404, {'error': 'Mapping not found'})
+        
+        print(f"✅ [REDIS] Cache HIT for {key} (latency: {redis_latency:.2f}ms)")
+        
+        # Parse JSON value
+        mapping_data = json.loads(cached_value)
+        
+        # Increment usage count
+        usage_key = f'field_mapping_usage:{field_signature}'
+        usage_count = redis_cli.incr(usage_key)
+        
+        # Update usage count in the mapping data
+        mapping_data['usageCount'] = usage_count
+        mapping_data['updatedAt'] = int(time.time())
+        
+        # Update Redis with new usage count
+        redis_cli.set(key, json.dumps(mapping_data), ex=REDIS_TTL)
+        
+        print(f"✅ [API] POST /api/field-mapping (get) - Success: matchedKey={mapping_data['matchedKey']}, confidence={mapping_data['confidence']}, usageCount={usage_count}")
+        
+        return create_response(200, {
+            'matchedKey': mapping_data['matchedKey'],
+            'confidence': mapping_data['confidence'],
+            'usageCount': usage_count
+        })
+    
+    except json.JSONDecodeError:
+        return create_response(500, {'error': 'Invalid JSON body or cached data format'})
+    except Exception as e:
+        print(f"Get field mapping error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return create_response(500, {'error': f'Internal server error: {str(e)}'})
+
+
+def match_field_with_ai_backend(
+    field_label: str,
+    field_name: str,
+    available_keys: list,
+    openai_key: str,
+    section_header: str = '',
+    nearby_fields: list = None,
+    form_purpose: str = '',
+    context: Any = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Match a field using OpenAI API (backend version)
+    """
+    try:
+        # Build prompt similar to frontend
+        field_info_parts = []
+        if field_label:
+            field_info_parts.append(f'Label: "{field_label}"')
+        if field_name:
+            field_info_parts.append(f'Name: "{field_name}"')
+        
+        field_info = '\n'.join(field_info_parts) if field_info_parts else 'Unknown field'
+        
+        context_parts = []
+        if section_header:
+            context_parts.append(f'Section: "{section_header}"')
+        if nearby_fields:
+            nearby_labels = [f.get('label', '') for f in nearby_fields if isinstance(f, dict)]
+            nearby_labels = [l for l in nearby_labels if l]
+            if nearby_labels:
+                context_parts.append(f'Nearby fields: {", ".join(nearby_labels)}')
+        if form_purpose:
+            context_parts.append(f'Form purpose: {form_purpose}')
+        
+        context_section = '\n\nCONTEXT (use this to disambiguate the field):\n' + '\n'.join(context_parts) if context_parts else ''
+        
+        prompt = f"""Form field to match:
+{field_info}{context_section}
+
+Available data keys (you MUST return one of these EXACTLY as written):
+{chr(10).join(f'{i+1}. "{k}"' for i, k in enumerate(available_keys))}
+
+Which data key semantically matches this field? Use CONTEXT to disambiguate ambiguous fields.
+
+CONTEXT RULES:
+- If section is "Pet Information" and nearby fields include "Breed" or "Age", "Name" likely means petName
+- If section is "Personal Information" and nearby fields include "Email" or "Phone", "Name" likely means fullName or firstName
+- If form purpose is "Pet Registration", fields in pet-related sections should match pet-related profile keys
+- Use nearby fields to understand field grouping and purpose
+
+Return the EXACT key name from the list above.
+- Match semantically: "personal projects" can match "projects"
+- Match semantically: "email address" can match "email"  
+- Match semantically: "phone number" can match "phone"
+- Match semantically: "credit card" can match "card" or "creditCard" if available
+
+IMPORTANT: Return the key EXACTLY as it appears in the list above. Do not modify it.
+If no good match exists, return null for matchedKey.
+
+Respond ONLY with valid JSON: {{"matchedKey": "exact_key_from_list" or null, "confidence": 0-100}}"""
+
+        # Call OpenAI API
+        url = 'https://api.openai.com/v1/chat/completions'
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {openai_key}'
+        }
+        
+        payload = {
+            'model': 'gpt-4o-mini',
+            'messages': [
+                {
+                    'role': 'system',
+                    'content': 'You are a form field matching expert. Match form fields to data keys based on semantic meaning and CONTEXT.\n\nCRITICAL: You MUST return the EXACT key name from the available keys list. Do not modify, normalize, or change the key name.\n\nCONTEXT IS KEY: Use section headers, nearby fields, and form purpose to disambiguate ambiguous fields.\n\nExamples:\n- Field "Name" in "Pet Information" section with nearby ["Breed", "Age"] → petName (NOT fullName)\n- Field "Name" in "Personal Information" section with nearby ["Email"] → fullName or firstName\n- Field: "personal projects", Available: ["projects", "personalProjects"] → Return: "projects" (exact match)\n- Field: "email address", Available: ["email", "emailAddress"] → Return: "email" (exact match)\n\nIf no good match exists, return null for matchedKey.\n\nRespond ONLY with valid JSON: {"matchedKey": "exact_key_from_list" or null, "confidence": 0-100}'
+                },
+                {
+                    'role': 'user',
+                    'content': prompt
+                }
+            ],
+            'temperature': 0.1,
+            'max_tokens': 150,
+            'response_format': {'type': 'json_object'}
+        }
+        
+        req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+        
+        # Log request details BEFORE making the call
+        print(f"🤖 [AI] Calling OpenAI API (timeout: 8s)...")
+        print(f"📤 [AI] Request URL: {url}")
+        print(f"📤 [AI] Request payload size: {len(json.dumps(payload))} bytes")
+        print(f"📤 [AI] Prompt length: {len(prompt)} chars")
+        print(f"📤 [AI] Available keys count: {len(available_keys)}")
+        
+        ai_start_time = time.time()
+        try:
+            print(f"⏰ [AI] Starting OpenAI API call at {ai_start_time}")
+            with urllib.request.urlopen(req, timeout=8) as response:
+                read_start = time.time()
+                raw_response = response.read().decode('utf-8')
+                read_latency = (time.time() - read_start) * 1000
+                print(f"📥 [AI] Response read completed in {read_latency:.2f}ms")
+                
+                response_data = json.loads(raw_response)
+                
+                ai_latency = (time.time() - ai_start_time) * 1000
+                
+                # Log full OpenAI API response for debugging
+                print(f"📥 [AI] OpenAI API response received (total latency: {ai_latency:.2f}ms)")
+                print(f"📥 [AI] Full OpenAI response_data: {json.dumps(response_data, indent=2)}")
+                
+                content = response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
+                
+                if not content:
+                    print(f"⚠️ [AI] OpenAI API returned empty content")
+                    return None
+                
+                print(f"📥 [AI] OpenAI content (length: {len(content)} chars):")
+                print(f"📥 [AI] {content}")
+                
+                try:
+                    result = json.loads(content)
+                    matched_key = result.get('matchedKey')
+                    confidence = result.get('confidence', 0)
+                    
+                    print(f"🔍 [AI] OpenAI response parsed successfully:")
+                    print(f"🔍 [AI] Full parsed result: {json.dumps(result, indent=2)}")
+                    print(f"🔍 [AI] matchedKey={matched_key}, confidence={confidence}")
+                except json.JSONDecodeError as json_error:
+                    print(f"❌ [AI] Failed to parse OpenAI response as JSON: {str(json_error)}")
+                    print(f"❌ [AI] Raw content that failed to parse: {content}")
+                    return None
+                
+                if matched_key:
+                    if matched_key in available_keys:
+                        confidence = max(0, min(95, confidence))
+                        print(f"✅ [AI] Valid match found: {field_label} → {matched_key} (confidence: {confidence})")
+                        return {
+                            'matchedKey': matched_key,
+                            'confidence': confidence
+                        }
+                    
+                    normalized_matched = matched_key.lower().strip().replace(' ', '').replace('_', '').replace('-', '')
+                    for key in available_keys:
+                        normalized_key = key.lower().strip().replace(' ', '').replace('_', '').replace('-', '')
+                        if normalized_key == normalized_matched:
+                            confidence = max(0, min(95, confidence))
+                            print(f"✅ [AI] Valid match found (normalized): {field_label} → {key} (AI returned: {matched_key}, confidence: {confidence})")
+                            return {
+                                'matchedKey': key,
+                                'confidence': confidence
+                            }
+                    
+                    print(f"⚠️ [AI] Matched key '{matched_key}' not in available keys list")
+                    print(f"⚠️ [AI] Available keys (first 20): {available_keys[:20]}")
+                    print(f"⚠️ [AI] Normalized AI key: '{normalized_matched}'")
+                
+                print(f"❌ [AI] No valid match found for {field_label}")
+                return None
+        except urllib.error.URLError as url_error:
+            ai_latency = (time.time() - ai_start_time) * 1000
+            error_str = str(url_error).lower()
+            print(f"❌ [AI] OpenAI API error after {ai_latency:.2f}ms")
+            print(f"❌ [AI] Error type: {type(url_error).__name__}")
+            print(f"❌ [AI] Error message: {str(url_error)}")
+            
+            if 'timeout' in error_str or 'timed out' in error_str:
+                print(f"⏱️ [AI] TIMEOUT detected - OpenAI API call exceeded timeout")
+                print(f"⏱️ [AI] Expected timeout: 8s, Actual wait time: {ai_latency/1000:.2f}s")
+                print(f"⚠️ [AI] urllib timeout parameter not being respected in Lambda/VPC environment")
+                print(f"⚠️ [AI] This suggests network/VPC connectivity issues")
+                print(f"⚠️ [AI] Lambda in VPC needs NAT Gateway or proper routing to access OpenAI API")
+                # Check if Lambda is also timing out
+                if context and hasattr(context, 'get_remaining_time_in_millis'):
+                    remaining_ms = context.get_remaining_time_in_millis()
+                    print(f"⏱️ [AI] Lambda remaining time at error: {remaining_ms}ms")
+                    if remaining_ms < 1000:
+                        print(f"⚠️ [AI] Lambda is also timing out! (remaining: {remaining_ms}ms)")
+                return None
+            else:
+                print(f"❌ [AI] Connection error (not timeout): {str(url_error)}")
+                return None
+        except Exception as api_error:
+            ai_latency = (time.time() - ai_start_time) * 1000
+            print(f"❌ [AI] OpenAI API error after {ai_latency:.2f}ms: {str(api_error)}")
+            import traceback
+            traceback.print_exc()
+            return None
+            
+    except Exception as e:
+        print(f"❌ [AI] AI matching failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def handle_post_field_mapping(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Store field mapping in Redis cache
+    POST /api/field-mapping
+    Body: {
+        "action": "store",
+        "fieldSignature": "abc123",
+        "matchedKey": "projects",
+        "confidence": 92,
+        "fieldLabel": "personal projects",
+        "fieldName": "projects"
+    }
+    """
+    try:
+        body = json.loads(event.get('body', '{}'))
+        field_signature = body.get('fieldSignature')
+        matched_key = body.get('matchedKey')
+        confidence = body.get('confidence', 0)
+        field_label = body.get('fieldLabel', '')
+        field_name = body.get('fieldName', '')
+        
+        print(f"💾 [API] POST /api/field-mapping (action: store) - fieldSignature: {field_signature}, matchedKey: {matched_key}, confidence: {confidence}")
+        
+        redis_cli = get_redis_client()
+        if not redis_cli:
+            error_msg = 'Redis connection failed - check CloudWatch logs for details'
+            print(f"❌ [API] POST /api/field-mapping (store) - Redis not available: {error_msg}")
+            return create_response(503, {
+                'error': 'Redis cache unavailable',
+                'message': error_msg,
+                'details': 'Check Lambda CloudWatch logs for Redis connection errors'
+            })
+        
+        if not field_signature or not matched_key:
+            print("❌ [API] POST /api/field-mapping - Missing required fields")
+            return create_response(400, {'error': 'fieldSignature and matchedKey required'})
+        
+        # Only store high-confidence matches (>= 80)
+        if confidence < 80:
+            print(f"⏭️ [API] POST /api/field-mapping - Low confidence ({confidence}) match not stored")
+            return create_response(200, {'message': 'Low confidence match not stored'})
+        
+        # Rate limiting: Check user write count (using IP or user agent as identifier)
+        user_id = event.get('requestContext', {}).get('identity', {}).get('sourceIp', 'unknown')
+        rate_limit_key = f'field_mapping_rate_limit:{user_id}'
+        daily_writes = redis_cli.incr(rate_limit_key)
+        
+        # Set expiration for rate limit counter (24 hours)
+        if daily_writes == 1:
+            redis_cli.expire(rate_limit_key, 24 * 60 * 60)
+        
+        # Rate limit: max 100 writes per user per day
+        if daily_writes > 100:
+            return create_response(429, {'error': 'Rate limit exceeded'})
+        
+        # Check if mapping already exists
+        key = f'field_mapping:{field_signature}'
+        print(f"📥 [REDIS] GET {key} (checking if exists)")
+        start_time = time.time()
+        existing = redis_cli.get(key)
+        redis_latency = (time.time() - start_time) * 1000
+        
+        if existing:
+            print(f"🔄 [REDIS] Updating existing mapping for {key} (latency: {redis_latency:.2f}ms)")
+            # Update existing mapping
+            existing_data = json.loads(existing)
+            existing_data['matchedKey'] = matched_key
+            existing_data['confidence'] = confidence
+            existing_data['updatedAt'] = int(time.time())
+            existing_data['fieldLabel'] = field_label
+            existing_data['fieldName'] = field_name
+            
+            # Preserve usage count
+            usage_key = f'field_mapping_usage:{field_signature}'
+            usage_count = redis_cli.get(usage_key)
+            if usage_count:
+                existing_data['usageCount'] = int(usage_count)
+            
+            set_start = time.time()
+            redis_cli.set(key, json.dumps(existing_data), ex=REDIS_TTL)
+            set_latency = (time.time() - set_start) * 1000
+            print(f"✅ [REDIS] SET {key} - Updated (latency: {set_latency:.2f}ms)")
+        else:
+            print(f"✨ [REDIS] Creating new mapping for {key} (latency: {redis_latency:.2f}ms)")
+            # Create new mapping
+            mapping_data = {
+                'matchedKey': matched_key,
+                'confidence': confidence,
+                'usageCount': 0,
+                'createdAt': int(time.time()),
+                'updatedAt': int(time.time()),
+                'fieldLabel': field_label,
+                'fieldName': field_name
+            }
+            
+            set_start = time.time()
+            redis_cli.set(key, json.dumps(mapping_data), ex=REDIS_TTL)
+            set_latency = (time.time() - set_start) * 1000
+            print(f"✅ [REDIS] SET {key} - Created (latency: {set_latency:.2f}ms)")
+        
+        print(f"✅ [API] POST /api/field-mapping - Success: stored mapping for {field_signature}")
+        
+        return create_response(200, {
+            'success': True,
+            'message': 'Mapping stored',
+            'fieldSignature': field_signature
+        })
+    
+    except json.JSONDecodeError:
+        return create_response(400, {'error': 'Invalid JSON'})
+    except Exception as e:
+        print(f"Post field mapping error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return create_response(500, {'error': f'Internal server error: {str(e)}'})
+
+
+def handle_batch_field_mapping(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Batch match multiple form fields using AI
+    POST /api/batch-field-mapping
+    Body: {
+        "fields": [
+            {
+                "index": 0,
+                "label": "Email",
+                "name": "email",
+                "placeholder": "Enter email",
+                "ariaLabel": "",
+                "type": "email",
+                "sectionHeader": "Contact Information",
+                "nearbyFields": [{"label": "Name", "name": "name"}],
+                "formPurpose": "Contact Form"
+            },
+            ...
+        ],
+        "availableKeys": ["email", "firstName", "lastName", ...],
+        "openAIKey": "sk-..."
+    }
+    """
+    try:
+        body_str = event.get('body', '{}')
+        if not body_str:
+            body_str = '{}'
+        
+        body = json.loads(body_str)
+        fields = body.get('fields', [])
+        available_keys = body.get('availableKeys', [])
+        openai_key = body.get('openAIKey', '')
+        
+        if not fields or not available_keys or not openai_key:
+            return create_response(400, {
+                'error': 'Missing required fields',
+                'details': 'fields, availableKeys, and openAIKey are required'
+            })
+        
+        print(f"🤖 [BATCH] Processing {len(fields)} fields with {len(available_keys)} available keys")
+        print(f"📋 [BATCH] Fields received:")
+        for i, field in enumerate(fields):
+            label = field.get('label', '')
+            name = field.get('name', '')
+            field_type = field.get('type', '')
+            section = field.get('sectionHeader', '')
+            print(f"  Field {i}: label=\"{label}\", name=\"{name}\", type=\"{field_type}\", section=\"{section}\"")
+        print(f"📋 [BATCH] Available keys ({len(available_keys)}): {', '.join(available_keys[:10])}{'...' if len(available_keys) > 10 else ''}")
+        
+        if context and hasattr(context, 'get_remaining_time_in_millis'):
+            remaining_ms = context.get_remaining_time_in_millis()
+            print(f"⏱️ [BATCH] Lambda remaining time at start: {remaining_ms}ms")
+            if remaining_ms < 10000:  # Need at least 10 seconds (8s for OpenAI + 2s buffer)
+                print(f"⏱️ [BATCH] Skipping batch matching - only {remaining_ms}ms remaining (need ~10s)")
+                return create_response(504, {
+                    'error': 'Insufficient time remaining for batch matching',
+                    'remaining_ms': remaining_ms,
+                    'required_ms': 10000
+                })
+        
+        batch_start = time.time()
+        batch_result = match_fields_batch_backend(fields, available_keys, openai_key, context)
+        batch_latency = (time.time() - batch_start) * 1000
+        
+        print(f"✅ [BATCH] Batch matching completed in {batch_latency:.2f}ms - {len(batch_result.get('mappings', []))} matches")
+        
+        return create_response(200, batch_result)
+        
+    except json.JSONDecodeError as e:
+        return create_response(400, {'error': 'Invalid JSON body', 'details': str(e)})
+    except Exception as e:
+        print(f"❌ [BATCH] Batch matching error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return create_response(500, {'error': f'Internal server error: {str(e)}'})
+
+
+def match_fields_batch_backend(
+    fields: list,
+    available_keys: list,
+    openai_key: str,
+    context: Any = None
+) -> Dict[str, Any]:
+    """
+    Match multiple fields using OpenAI API in a single batch call
+    """
+    try:
+        print(f"🔍 [BATCH] Building prompt for {len(fields)} fields...")
+        fields_info = []
+        for field in fields:
+            field_index = field.get('index', -1)
+            field_label = field.get('label', '')
+            field_name = field.get('name', '')
+            field_type = field.get('type', '')
+            print(f"  Processing field {field_index}: label=\"{field_label}\", name=\"{field_name}\", type=\"{field_type}\"")
+            
+            field_info_parts = []
+            if field.get('label'):
+                field_info_parts.append(f'Label: "{field["label"]}"')
+            if field.get('name'):
+                field_info_parts.append(f'Name: "{field["name"]}"')
+            if field.get('placeholder'):
+                field_info_parts.append(f'Placeholder: "{field["placeholder"]}"')
+            
+            field_info = '\n'.join(field_info_parts) if field_info_parts else 'Unknown field'
+            
+            context_parts = []
+            if field.get('sectionHeader'):
+                context_parts.append(f'Section: "{field["sectionHeader"]}"')
+            if field.get('nearbyFields'):
+                nearby_labels = [f.get('label', '') for f in field['nearbyFields'] if isinstance(f, dict)]
+                nearby_labels = [l for l in nearby_labels if l]
+                if nearby_labels:
+                    context_parts.append(f'Nearby fields: {", ".join(nearby_labels)}')
+            if field.get('formPurpose'):
+                context_parts.append(f'Form purpose: {field["formPurpose"]}')
+            
+            context_section = '\n\nCONTEXT:\n' + '\n'.join(context_parts) if context_parts else ''
+            
+            fields_info.append(f'Field {field["index"]}:\n{field_info}{context_section}')
+        
+        prompt = f"""Match these form fields to available data keys:
+
+{chr(10).join(fields_info)}
+
+Available data keys (you MUST return keys EXACTLY as written):
+{chr(10).join(f'{i+1}. "{k}"' for i, k in enumerate(available_keys))}
+
+For each field, determine the best matching data key based on semantic meaning and CONTEXT.
+Use CONTEXT (section headers, nearby fields, form purpose) to disambiguate ambiguous fields.
+
+CONTEXT RULES:
+- If section is "Pet Information" and nearby fields include "Breed" or "Age", "Name" likely means petName
+- If section is "Personal Information" and nearby fields include "Email" or "Phone", "Name" likely means fullName or firstName
+- If form purpose is "Pet Registration", fields in pet-related sections should match pet-related profile keys
+- Use nearby fields to understand field grouping and purpose
+
+Return JSON:
+{{
+  "mappings": [
+    {{
+      "fieldIndex": 0,
+      "matchedKey": "exact_key_from_list" or null,
+      "confidence": 0-100,
+      "possibleMatches": [
+        {{"key": "exact_key", "confidence": 0-100, "reasoning": "brief explanation"}}
+      ]
+    }}
+  ]
+}}
+
+IMPORTANT:
+- Return keys EXACTLY as they appear in the available keys list
+- Include ALL reasonable matches in possibleMatches (confidence > 50)
+- Order possibleMatches by confidence (highest first)
+- If no good match exists, return null for matchedKey and empty array for possibleMatches"""
+
+        url = 'https://api.openai.com/v1/chat/completions'
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {openai_key}'
+        }
+        
+        payload = {
+            'model': 'gpt-4o-mini',
+            'messages': [
+                {
+                    'role': 'system',
+                    'content': 'You are a form field matching expert. Match form fields to data keys based on semantic meaning and CONTEXT.\n\nCRITICAL: You MUST return the EXACT key name(s) from the available keys list. Do not modify, normalize, or change the key names.\n\nCONTEXT IS KEY: Use section headers, nearby fields, and form purpose to disambiguate ambiguous fields.\n\nRespond ONLY with valid JSON object.'
+                },
+                {
+                    'role': 'user',
+                    'content': prompt
+                }
+            ],
+            'temperature': 0.1,
+            'max_tokens': 2000,
+            'response_format': {'type': 'json_object'}
+        }
+        
+        # Log prompt size for debugging
+        prompt_size = len(prompt)
+        payload_size = len(json.dumps(payload))
+        print(f"🤖 [BATCH] Calling OpenAI API (timeout: 8s)...")
+        print(f"📊 [BATCH] Prompt size: {prompt_size} chars, Payload size: {payload_size} bytes, Fields: {len(fields)}, Keys: {len(available_keys)}")
+        print(f"📤 [BATCH] Request URL: {url}")
+        
+        # Check Lambda remaining time before making API call
+        if context and hasattr(context, 'get_remaining_time_in_millis'):
+            remaining_ms = context.get_remaining_time_in_millis()
+            print(f"⏱️ [BATCH] Lambda remaining time: {remaining_ms}ms before OpenAI call")
+            if remaining_ms < 10000:  # Less than 10 seconds remaining
+                print(f"⚠️ [BATCH] Low remaining time ({remaining_ms}ms), OpenAI call may timeout")
+        
+        ai_start_time = time.time()
+        print(f"⏰ [BATCH] Starting OpenAI API call at {ai_start_time}")
+        try:
+            # Create request with explicit timeout
+            request_obj = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+            print(f"📤 [BATCH] Request created, opening connection with timeout=8s...")
+            
+            with urllib.request.urlopen(request_obj, timeout=8) as response:
+                read_start = time.time()
+                print(f"📥 [BATCH] Connection opened, reading response...")
+                raw_response = response.read().decode('utf-8')
+                read_latency = (time.time() - read_start) * 1000
+                print(f"📥 [BATCH] Response read completed in {read_latency:.2f}ms")
+                
+                response_data = json.loads(raw_response)
+                
+                ai_latency = (time.time() - ai_start_time) * 1000
+                
+                # Log full OpenAI API response for debugging
+                print(f"📥 [BATCH] OpenAI API response received (total latency: {ai_latency:.2f}ms)")
+                print(f"📥 [BATCH] Full OpenAI response_data: {json.dumps(response_data, indent=2)}")
+                
+                content = response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
+                
+                if not content:
+                    print(f"⚠️ [BATCH] OpenAI API returned empty content")
+                    return {'mappings': []}
+                
+                print(f"📥 [BATCH] OpenAI content (length: {len(content)} chars):")
+                print(f"📥 [BATCH] {content}")
+                
+                try:
+                    result = json.loads(content)
+                    mappings = result.get('mappings', [])
+                    
+                    print(f"✅ [BATCH] OpenAI API response parsed successfully - {len(mappings)} mappings")
+                    print(f"📋 [BATCH] Full parsed result: {json.dumps(result, indent=2)}")
+                    
+                    # Log each mapping for debugging
+                    for i, mapping in enumerate(mappings):
+                        print(f"📋 [BATCH] Mapping {i}: fieldIndex={mapping.get('fieldIndex')}, matchedKey={mapping.get('matchedKey')}, confidence={mapping.get('confidence')}, possibleMatches={len(mapping.get('possibleMatches', []))}")
+                except json.JSONDecodeError as json_error:
+                    print(f"❌ [BATCH] Failed to parse OpenAI response as JSON: {str(json_error)}")
+                    print(f"❌ [BATCH] Raw content that failed to parse: {content}")
+                    return {'mappings': []}
+                
+                validated_mappings = []
+                for mapping in mappings:
+                    field_index = mapping.get('fieldIndex')
+                    matched_key = mapping.get('matchedKey')
+                    confidence = mapping.get('confidence', 0)
+                    possible_matches = mapping.get('possibleMatches', [])
+                    
+                    if field_index is None or field_index < 0 or field_index >= len(fields):
+                        continue
+                    
+                    validated_possible = []
+                    for pm in possible_matches:
+                        pm_key = pm.get('key')
+                        if pm_key and pm_key in available_keys:
+                            validated_possible.append({
+                                'key': pm_key,
+                                'confidence': min(max(pm.get('confidence', 70), 0), 95),
+                                'reasoning': pm.get('reasoning', '')
+                            })
+                    
+                    if matched_key and matched_key in available_keys:
+                        validated_mappings.append({
+                            'fieldIndex': field_index,
+                            'matchedKey': matched_key,
+                            'confidence': min(max(confidence, 0), 100),
+                            'possibleMatches': validated_possible
+                        })
+                    elif confidence > 0:
+                        validated_mappings.append({
+                            'fieldIndex': field_index,
+                            'matchedKey': None,
+                            'confidence': min(max(confidence, 0), 100),
+                            'possibleMatches': validated_possible
+                        })
+                    else:
+                        validated_mappings.append({
+                            'fieldIndex': field_index,
+                            'matchedKey': None,
+                            'confidence': 0,
+                            'possibleMatches': []
+                        })
+                
+                # Ensure all fields are included in response (even if no match)
+                field_indices_in_response = {m['fieldIndex'] for m in validated_mappings}
+                for i in range(len(fields)):
+                    if i not in field_indices_in_response:
+                        validated_mappings.append({
+                            'fieldIndex': i,
+                            'matchedKey': None,
+                            'confidence': 0,
+                            'possibleMatches': []
+                        })
+                
+                # Sort by fieldIndex to maintain order
+                validated_mappings.sort(key=lambda x: x['fieldIndex'])
+                
+                redis_cli = get_redis_client()
+                if redis_cli:
+                    for mapping in validated_mappings:
+                        field = fields[mapping['fieldIndex']]
+                        field_signature = generate_field_signature_from_dict(field)
+                        if mapping.get('matchedKey'):
+                            key = f'field_mapping:{field_signature}'
+                            mapping_data = {
+                                'matchedKey': mapping['matchedKey'],
+                                'confidence': mapping['confidence'],
+                                'usageCount': 0,
+                                'createdAt': int(time.time()),
+                                'updatedAt': int(time.time()),
+                                'fieldLabel': field.get('label', ''),
+                                'fieldName': field.get('name', ''),
+                                'source': 'ai'
+                            }
+                            try:
+                                redis_cli.set(key, json.dumps(mapping_data), ex=REDIS_TTL)
+                            except Exception as e:
+                                print(f"⚠️ [BATCH] Failed to cache field {field_index}: {str(e)}")
+                
+                return {'mappings': validated_mappings}
+                
+        except urllib.error.URLError as url_error:
+            ai_latency = (time.time() - ai_start_time) * 1000
+            error_str = str(url_error).lower()
+            print(f"❌ [BATCH] OpenAI API error after {ai_latency:.2f}ms")
+            print(f"❌ [BATCH] Error type: {type(url_error).__name__}")
+            print(f"❌ [BATCH] Error message: {str(url_error)}")
+            
+            if 'timeout' in error_str or 'timed out' in error_str:
+                print(f"⏱️ [BATCH] TIMEOUT detected - OpenAI API call exceeded timeout")
+                print(f"⏱️ [BATCH] Expected timeout: 8s, Actual wait time: {ai_latency/1000:.2f}s")
+                if context and hasattr(context, 'get_remaining_time_in_millis'):
+                    remaining_ms = context.get_remaining_time_in_millis()
+                    print(f"⏱️ [BATCH] Lambda remaining time at error: {remaining_ms}ms")
+                    if remaining_ms < 1000:
+                        print(f"⚠️ [BATCH] Lambda is also timing out! (remaining: {remaining_ms}ms)")
+                print(f"📊 [BATCH] Timeout details - Fields: {len(fields)}, Keys: {len(available_keys)}, Prompt size: {len(prompt)} chars")
+                return {'mappings': []}
+            else:
+                print(f"❌ [BATCH] Connection error (not timeout): {str(url_error)}")
+                return {'mappings': []}
+        except Exception as api_error:
+            ai_latency = (time.time() - ai_start_time) * 1000
+            print(f"❌ [BATCH] OpenAI API error after {ai_latency:.2f}ms: {str(api_error)}")
+            import traceback
+            traceback.print_exc()
+            return {'mappings': []}
+            
+    except Exception as e:
+        print(f"❌ [BATCH] Batch matching failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {'mappings': []}
+
+
+def generate_field_signature_from_dict(field: Dict[str, Any]) -> str:
+    """Generate field signature from field dictionary"""
+    normalized = f"{field.get('label', '')}|{field.get('name', '')}|{field.get('placeholder', '')}|{field.get('ariaLabel', '')}"
+    normalized = normalized.lower().strip()
+    
+    hash_val = 0
+    for char in normalized:
+        hash_val = ((hash_val << 5) - hash_val) + ord(char)
+        hash_val = hash_val & hash_val
+    
+    return str(abs(hash_val))[:8]
 
 
 def decimal_default(obj):

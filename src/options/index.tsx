@@ -8,8 +8,10 @@ import Options from './OptionsComponent';
 import '../styles/globals.css';
 
 const root = document.getElementById('root');
-if (root) {
-  ReactDOM.createRoot(root).render(
+if (root && !(root as any)._reactRootContainer) {
+  const reactRoot = ReactDOM.createRoot(root);
+  (root as any)._reactRootContainer = reactRoot;
+  reactRoot.render(
     <React.StrictMode>
       <Options />
     </React.StrictMode>

@@ -39,8 +39,13 @@ export async function analyzeAllFieldsWithAI(
 
 Analyze the ENTIRE form context and ALL available user data to make smart matches using common sense and contextual understanding.
 
+CRITICAL: Use section headers, nearby fields, and form purpose to disambiguate ambiguous fields.
+
 Rules:
 - Consider the full question/label text, not just field names
+- Use section headers: "Name" in "Pet Information" section → petName (NOT fullName)
+- Use nearby fields: "Name" with nearby ["Breed", "Age"] → petName
+- Use form purpose: Pet registration form → pet-related fields match pet profile keys
 - Understand context: "What's your passport number?" → passportNumber
 - Handle variations: "travel document" = passport, "mobile" = phone
 - Use common sense: "Where do you live?" → address
@@ -50,23 +55,65 @@ Rules:
 
 Return ONLY valid JSON.`;
 
-    const userPrompt = `Analyze these form fields and match them intelligently to available profile data:
+    const formWideContext = fields.length > 0 && fields[0].context?.formPurpose 
+      ? `\nFORM PURPOSE: ${fields[0].context.formPurpose}`
+      : '';
+    
+    const pageTitle = document.title ? `\nPAGE TITLE: ${document.title}` : '';
+    
+    const fieldsBySection = new Map<string, FormField[]>();
+    fields.forEach(f => {
+      const section = f.context?.sectionHeader || 'No Section';
+      if (!fieldsBySection.has(section)) {
+        fieldsBySection.set(section, []);
+      }
+      fieldsBySection.get(section)!.push(f);
+    });
+    
+    const sectionsInfo = Array.from(fieldsBySection.entries()).map(([section, sectionFields]) => {
+      const fieldLabels = sectionFields.map(f => f.label || f.name).filter(l => l.length > 0);
+      return `  "${section}": [${fieldLabels.join(', ')}]`;
+    }).join('\n');
+    
+    const userPrompt = `Analyze these form fields and match them intelligently to available profile data:${formWideContext}${pageTitle}
 
-FORM FIELDS:
-${fields.map((f, i) => `
+FORM STRUCTURE (fields grouped by section):
+${sectionsInfo}
+
+FORM FIELDS WITH CONTEXT:
+${fields.map((f, i) => {
+  const contextParts: string[] = [];
+  if (f.context?.sectionHeader) {
+    contextParts.push(`Section: "${f.context.sectionHeader}"`);
+  }
+  if (f.context?.nearbyFields && f.context.nearbyFields.length > 0) {
+    const nearbyLabels = f.context.nearbyFields.map(nf => nf.label).filter(l => l.length > 0);
+    if (nearbyLabels.length > 0) {
+      contextParts.push(`Nearby: ${nearbyLabels.join(', ')}`);
+    }
+  }
+  const contextStr = contextParts.length > 0 ? ` | ${contextParts.join(' | ')}` : '';
+  
+  return `
 ${i}. Label: "${f.label}"
    Name: "${f.name}"
    Placeholder: "${f.placeholder}"
-   Type: ${f.type}
-   Aria-label: "${f.ariaLabel}"
-`).join('\n')}
+   Type: ${f.type}${contextStr}`;
+}).join('\n')}
 
 AVAILABLE PROFILE DATA (keys only):
 ${Object.keys(profileData).map(key => `- ${key}`).join('\n')}
 
-For EACH field (0-${fields.length - 1}), determine the best profile data key to use. Use context and common sense.
+For EACH field (0-${fields.length - 1}), determine the best profile data key to use. Use CONTEXT to disambiguate.
+
+CONTEXT RULES:
+- If field is in "Pet Information" section with nearby ["Breed", "Age"], "Name" → petName
+- If field is in "Personal Information" section with nearby ["Email"], "Name" → fullName or firstName
+- If form purpose is "Pet Registration", pet-related fields → pet profile keys
+- Use section headers and nearby fields to understand field grouping
 
 Examples:
+- Field "Name" in "Pet Information" section with nearby ["Breed"] → petName (NOT fullName)
 - "What's your passport or travel document number?" → passportNumber
 - "Where do you currently live?" → address  
 - "Contact number" → phone
@@ -84,7 +131,7 @@ Return JSON:
   ]
 }
 
-Analyze ALL ${fields.length} fields with full context awareness.`;
+Analyze ALL ${fields.length} fields with full context awareness, using sections and nearby fields to disambiguate.`;
 
     console.log('📤 Sending comprehensive analysis request to OpenAI...');
     

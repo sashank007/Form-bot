@@ -3,6 +3,7 @@
  */
 
 import { FormField } from '../types';
+import { extractFieldContext } from '../utils/fieldContextExtractor';
 
 /**
  * Get XPath for an element
@@ -413,6 +414,13 @@ export function detectFormFields(): FormField[] {
   for (const element of listboxes) {
     if (shouldIncludeListbox(element)) {
       fields.push(extractListboxFieldInfo(element));
+    }
+  }
+  
+  // Extract context for all fields
+  if (fields.length > 0) {
+    for (let i = 0; i < fields.length; i++) {
+      fields[i].context = extractFieldContext(fields[i], fields);
     }
   }
   

@@ -14,6 +14,9 @@ Resources:
       Environment:
         Variables:
           DYNAMODB_TABLE: form-bot-data
+          REDIS_HOST: formbot-redis-gz9sjn.serverless.use1.cache.amazonaws.com
+          REDIS_PORT: '6379'
+          REDIS_SSL: 'true'
       Policies:
         - DynamoDBCrudPolicy:
             TableName: form-bot-data
@@ -80,6 +83,30 @@ Resources:
           Properties:
             Path: /health
             Method: GET
+            RestApiId: !Ref FormBotAPI
+        
+        # Get Field Mapping (Redis Cache)
+        GetFieldMapping:
+          Type: Api
+          Properties:
+            Path: /api/field-mapping
+            Method: GET
+            RestApiId: !Ref FormBotAPI
+        
+        # Post Field Mapping (Redis Cache)
+        PostFieldMapping:
+          Type: Api
+          Properties:
+            Path: /api/field-mapping
+            Method: POST
+            RestApiId: !Ref FormBotAPI
+        
+        # Batch Field Mapping (Batch AI Matching)
+        BatchFieldMapping:
+          Type: Api
+          Properties:
+            Path: /api/batch-field-mapping
+            Method: POST
             RestApiId: !Ref FormBotAPI
 
   # API Gateway

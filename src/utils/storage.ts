@@ -7,6 +7,13 @@
 import { SavedFormData, FormData, Settings } from '../types';
 import { pushProfileToDynamoDB, getAllProfilesFromCloud } from './dynamodbSync';
 import { getAuth } from './googleAuth';
+import { invalidateCacheForKey } from './matchingCache';
+import { invalidateBatchCache } from './batchAIMatcher';
+
+type ProfileChangeCallback = () => void | Promise<void>;
+
+let profileChangeCallbacks: ProfileChangeCallback[] = [];
+let profileChangeDebounceTimer: number | null = null;
 
 const STORAGE_KEYS = {
   FORM_DATA: 'formbot_data',
@@ -37,6 +44,7 @@ export async function saveFormData(data: SavedFormData): Promise<void> {
   try {
     const allData = await getAllFormData();
     const existingIndex = allData.findIndex(d => d.id === data.id);
+    const existingData = existingIndex >= 0 ? allData[existingIndex] : null;
     
     if (existingIndex >= 0) {
       allData[existingIndex] = data;
@@ -45,6 +53,22 @@ export async function saveFormData(data: SavedFormData): Promise<void> {
     }
     
     await chrome.storage.local.set({ [STORAGE_KEYS.FORM_DATA]: allData });
+    
+    // Invalidate cache for keys that changed
+    if (existingData && existingData.data) {
+      const oldKeys = new Set(Object.keys(existingData.data));
+      const newKeys = new Set(Object.keys(data.data));
+      
+      // Invalidate cache for removed or changed keys
+      for (const key of oldKeys) {
+        if (!newKeys.has(key) || existingData.data[key] !== data.data[key]) {
+          await invalidateCacheForKey(key);
+        }
+      }
+    }
+    
+    // Trigger profile change callbacks (debounced)
+    triggerProfileChangeCallbacks();
     
     // Auto-sync to DynamoDB if user is signed in and auto-sync is enabled
     try {
@@ -77,35 +101,61 @@ export async function saveFormData(data: SavedFormData): Promise<void> {
   }
 }
 
+// Track if we've loaded from DynamoDB in this session
+let hasLoadedFromCloud = false;
+let cloudLoadPromise: Promise<SavedFormData[]> | null = null;
+
 /**
  * Get all saved form data
- * PRIMARY: Fetch from DynamoDB (single source of truth)
- * FALLBACK: Use local cache if offline or not signed in
+ * PRIMARY: Fetch from DynamoDB ONCE on initial load (single source of truth)
+ * FALLBACK: Use local cache for subsequent calls
  */
-export async function getAllFormData(): Promise<SavedFormData[]> {
+export async function getAllFormData(forceRefresh: boolean = false): Promise<SavedFormData[]> {
   try {
     const auth = await getAuth();
     
-    // If signed in, fetch from DynamoDB (single source of truth)
-    if (auth) {
+    // If signed in and haven't loaded from cloud yet (or force refresh), fetch from DynamoDB
+    if (auth && (!hasLoadedFromCloud || forceRefresh)) {
+      // If there's already a load in progress, wait for it
+      if (cloudLoadPromise && !forceRefresh) {
+        console.log('⏳ Waiting for existing cloud load to complete...');
+        return await cloudLoadPromise;
+      }
+      
       console.log('📥 Fetching profiles from DynamoDB (single source of truth)...');
+      
+      // Create promise for this load
+      cloudLoadPromise = (async () => {
+        try {
+          const cloudProfiles = await getAllProfilesFromCloud();
+          
+          // Update local cache
+          await chrome.storage.local.set({ [STORAGE_KEYS.FORM_DATA]: cloudProfiles });
+          
+          hasLoadedFromCloud = true;
+          console.log(`✅ Loaded ${cloudProfiles.length} profile(s) from cloud`);
+          return cloudProfiles;
+        } catch (cloudError) {
+          console.warn('⚠️ Failed to fetch from cloud, using local cache:', cloudError);
+          hasLoadedFromCloud = false; // Reset so we can try again next time
+          throw cloudError;
+        } finally {
+          cloudLoadPromise = null;
+        }
+      })();
+      
       try {
-        const cloudProfiles = await getAllProfilesFromCloud();
-        
-        // Update local cache
-        await chrome.storage.local.set({ [STORAGE_KEYS.FORM_DATA]: cloudProfiles });
-        
-        console.log(`✅ Loaded ${cloudProfiles.length} profile(s) from cloud`);
-        return cloudProfiles;
-      } catch (cloudError) {
-        console.warn('⚠️ Failed to fetch from cloud, using local cache:', cloudError);
+        return await cloudLoadPromise;
+      } catch (error) {
         // Fall through to local cache
       }
+    } else if (auth && hasLoadedFromCloud) {
+      console.log('ℹ️ Using cached profiles (already loaded from cloud)');
     } else {
       console.log('ℹ️ Not signed in, using local cache');
     }
     
-    // Fallback: Use local cache (offline mode or not signed in)
+    // Use local cache (offline mode, not signed in, or after initial load)
     const result = await chrome.storage.local.get(STORAGE_KEYS.FORM_DATA);
     const data = result[STORAGE_KEYS.FORM_DATA];
     
@@ -121,6 +171,14 @@ export async function getAllFormData(): Promise<SavedFormData[]> {
 }
 
 /**
+ * Force refresh profiles from DynamoDB
+ */
+export async function refreshProfilesFromCloud(): Promise<SavedFormData[]> {
+  hasLoadedFromCloud = false;
+  return await getAllFormData(true);
+}
+
+/**
  * Get a single form data by ID
  */
 export async function getFormDataById(id: string): Promise<SavedFormData | null> {
@@ -133,9 +191,21 @@ export async function getFormDataById(id: string): Promise<SavedFormData | null>
  */
 export async function deleteFormData(id: string): Promise<void> {
   const allData = await getAllFormData();
-  const filtered = allData.filter(d => d.id !== id);
+  const profileToDelete = allData.find(d => d.id === id);
   
+  const filtered = allData.filter(d => d.id !== id);
   await chrome.storage.local.set({ [STORAGE_KEYS.FORM_DATA]: filtered });
+  
+  // Invalidate cache for all keys in deleted profile
+  if (profileToDelete && profileToDelete.data) {
+    const keys = Object.keys(profileToDelete.data);
+    for (const key of keys) {
+      await invalidateCacheForKey(key);
+    }
+  }
+  
+  // Trigger profile change callbacks (debounced)
+  triggerProfileChangeCallbacks();
 }
 
 /**
@@ -229,6 +299,7 @@ export async function importData(jsonString: string): Promise<void> {
     
     if (parsed.formData && Array.isArray(parsed.formData)) {
       await chrome.storage.local.set({ [STORAGE_KEYS.FORM_DATA]: parsed.formData });
+      triggerProfileChangeCallbacks();
     }
     
     if (parsed.settings) {
@@ -238,5 +309,41 @@ export async function importData(jsonString: string): Promise<void> {
     console.error('Failed to import data:', error);
     throw new Error('Invalid import file format');
   }
+}
+
+/**
+ * Register callback for profile changes
+ */
+export function onProfileChange(callback: ProfileChangeCallback): () => void {
+  profileChangeCallbacks.push(callback);
+  
+  return () => {
+    profileChangeCallbacks = profileChangeCallbacks.filter(cb => cb !== callback);
+  };
+}
+
+/**
+ * Trigger profile change callbacks (debounced)
+ */
+function triggerProfileChangeCallbacks(): void {
+  if (profileChangeDebounceTimer !== null) {
+    clearTimeout(profileChangeDebounceTimer);
+  }
+  
+  profileChangeDebounceTimer = window.setTimeout(async () => {
+    console.log(`🔄 [PROFILE] Profile changed - triggering ${profileChangeCallbacks.length} callback(s)`);
+    
+    await invalidateBatchCache();
+    
+    for (const callback of profileChangeCallbacks) {
+      try {
+        await callback();
+      } catch (error) {
+        console.error('Profile change callback error:', error);
+      }
+    }
+    
+    profileChangeDebounceTimer = null;
+  }, 300);
 }
 

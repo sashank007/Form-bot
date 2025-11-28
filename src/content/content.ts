@@ -5,7 +5,7 @@
 import { Message, DetectedField, FormDetectionResult, FormTemplate } from '../types';
 import { detectFormFields, countForms, observeFormChanges, getElementByXPath, highlightField, removeHighlight, removeAllHighlights } from './formDetector';
 import { matchFields, getFillValue } from './fieldMatcher';
-import { getPrimaryFormData, saveLastFill, getLastFill, getSettings, getFormDataById } from '../utils/storage';
+import { getPrimaryFormData, saveLastFill, getLastFill, getSettings, getFormDataById, onProfileChange } from '../utils/storage';
 import { setupInlineButtons, removeAllInlineButtons } from './inlineButton';
 import { analyzeFieldsWithAI } from '../utils/aiFormAnalyzer';
 import { extractProfileFromResume, fillFormFromProfile } from '../utils/resumeExtractor';
@@ -18,6 +18,8 @@ import { analyzeAllFieldsWithAI, applyAIAnalysisResults } from '../utils/aiCompr
 import { fillFieldWithEvents } from '../utils/eventSimulator';
 import { analyzeField } from '../utils/fieldPurposeIdentifier';
 import { sendToZapier, extractFilledFormData } from '../utils/zapierIntegration';
+import { batchMatchAllFields } from '../utils/batchAIMatcher';
+import { classifyField } from '../utils/fieldClassifier';
 
 let detectedFields: DetectedField[] = [];
 let formObserver: MutationObserver | null = null;
@@ -40,6 +42,12 @@ function init() {
     debounceTimer = window.setTimeout(() => {
       detectAndNotify();
     }, 500);
+  });
+  
+  // Listen for profile changes and re-run matching
+  onProfileChange(() => {
+    console.log('🔄 [PROFILE] Profile changed - re-running form detection');
+    detectAndNotify();
   });
   
   // Listen for messages from popup/background
@@ -66,27 +74,95 @@ async function detectAndNotify() {
   
   const settings = await getSettings();
   
-  // Use comprehensive AI analysis if enabled (analyzes ALL fields)
-  if (settings.openAIEnabled && settings.openAIKey) {
+  // Use batch AI matching if enabled (single LLM call for all fields)
+  if (settings.openAIEnabled && settings.openAIKey && fields.length > 0) {
+    console.log(`🤖 [BATCH] Batch AI matching mode: ${fields.length} fields detected on page`);
+    console.log(`📋 [BATCH] Form fields detected:`);
+    fields.forEach((field, idx) => {
+      console.log(`  Field ${idx}: label="${field.label || ''}", name="${field.name || ''}", type="${field.type || ''}", id="${field.id || ''}"`);
+    });
+    
+    try {
+      const batchResults = await batchMatchAllFields(fields, savedData);
+      
+      // Convert batch results to DetectedField format
+      detectedFields = fields.map((field, index) => {
+        const batchMatch = batchResults.get(index);
+        
+        // Classify field type
+        const { fieldType, confidence: typeConfidence } = classifyField(
+          field.name,
+          field.id,
+          field.type,
+          field.placeholder,
+          field.label,
+          field.ariaLabel
+        );
+        
+        if (batchMatch && batchMatch.matchedKey) {
+          return {
+            field,
+            fieldType,
+            confidence: batchMatch.confidence,
+            matchedKey: batchMatch.matchedKey,
+            possibleMatches: batchMatch.possibleMatches,
+          };
+        }
+        
+        // No batch match - use type-based confidence or 0
+        return {
+          field,
+          fieldType,
+          confidence: batchMatch?.confidence || typeConfidence || 0,
+          matchedKey: batchMatch?.matchedKey,
+        };
+      });
+      
+      // For fields without batch matches, try individual matching as fallback
+      const unmatchedFields = detectedFields
+        .map((df, idx) => ({ df, idx }))
+        .filter(({ df }) => !df.matchedKey || df.confidence < 50);
+      
+      if (unmatchedFields.length > 0) {
+        console.log(`🔄 [BATCH] Falling back to individual matching for ${unmatchedFields.length} unmatched fields`);
+        const fallbackFields = unmatchedFields.map(({ idx }) => fields[idx]);
+        const fallbackResults = await matchFields(fallbackFields, savedData);
+        
+        unmatchedFields.forEach(({ idx }, fallbackIdx) => {
+          if (fallbackResults[fallbackIdx] && fallbackResults[fallbackIdx].matchedKey) {
+            detectedFields[idx] = fallbackResults[fallbackIdx];
+          }
+        });
+      }
+      
+      const matchedCount = detectedFields.filter(df => df.matchedKey && df.confidence > 0).length;
+      console.log(`✅ [BATCH] Batch matching complete: ${matchedCount}/${fields.length} fields matched`);
+    } catch (error) {
+      console.error('❌ [BATCH] Batch matching failed, falling back to individual:', error);
+      // Fallback to individual matching
+      detectedFields = await matchFields(fields, savedData);
+    }
+  } else if (settings.openAIEnabled && settings.openAIKey) {
+    // Use comprehensive AI analysis if enabled (analyzes ALL fields)
     console.log('🧠 AI Comprehensive Mode: Analyzing all fields with full context...');
     
-    // First do local matching for baseline
-    detectedFields = matchFields(fields, savedData);
+    // First do intelligent matching (includes cache + AI)
+    detectedFields = await matchFields(fields, savedData);
     
-    // Then enhance ALL fields with AI analysis
+    // Then enhance ALL fields with AI analysis (for additional context)
     const aiResults = await analyzeAllFieldsWithAI(fields, savedData);
     detectedFields = applyAIAnalysisResults(detectedFields, aiResults);
     
     console.log('✅ AI comprehensive analysis complete');
   } else {
-    // Fallback to local matching only
-    console.log('📊 Using local field matching (AI disabled)');
-    detectedFields = matchFields(fields, savedData);
+    // Fallback to intelligent matching (cache + fuzzy, no AI)
+    console.log('📊 Using intelligent field matching (AI disabled, cache enabled)');
+    detectedFields = await matchFields(fields, savedData);
   }
   
   // Setup inline buttons for fields
   if (settings.autoFillEnabled) {
-    setupInlineButtons(detectedFields);
+    await setupInlineButtons(detectedFields);
   }
   
   // Start monitoring form fill status
@@ -254,7 +330,24 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
   }
   
   // Merge secrets with regular data (secrets take priority)
-  const mergedData = { ...savedData, ...profileSecrets };
+  let mergedData: any = { ...savedData, ...profileSecrets };
+  
+  // Flatten nested data structures (e.g., Google Sheets rows format)
+  if (mergedData.rows && Array.isArray(mergedData.rows) && mergedData.rows.length > 0) {
+    const flattened: any = {};
+    for (const row of mergedData.rows) {
+      if (typeof row === 'object' && row !== null) {
+        Object.assign(flattened, row);
+      }
+    }
+    // Also include any top-level keys that aren't 'rows'
+    for (const key in mergedData) {
+      if (key !== 'rows' && !(key in flattened)) {
+        flattened[key] = mergedData[key];
+      }
+    }
+    mergedData = flattened;
+  }
   
   const previousValues: Array<{ xpath: string; value: string }> = [];
   
@@ -390,12 +483,12 @@ async function rematchWithProfile(profileId: string) {
   const fields = detectFormFields();
   
   // Re-match with new profile data
-  detectedFields = matchFields(fields, savedData);
+  detectedFields = await matchFields(fields, savedData);
   
   // Update inline buttons
   const settings = await getSettings();
   if (settings.autoFillEnabled) {
-    setupInlineButtons(detectedFields);
+    await setupInlineButtons(detectedFields);
   }
   
   console.log(`Form Bot: Re-matched fields with profile "${profile.name}"`);
@@ -433,7 +526,24 @@ async function fillSingleFieldFromMessage(payload: any) {
   }
   
   // Merge secrets with regular data (secrets take priority)
-  const mergedData = { ...savedData, ...profileSecrets };
+  let mergedData = { ...savedData, ...profileSecrets };
+  
+  // Flatten nested data structures (e.g., Google Sheets rows format)
+  if (mergedData.rows && Array.isArray(mergedData.rows) && mergedData.rows.length > 0) {
+    const flattened: any = {};
+    for (const row of mergedData.rows) {
+      if (typeof row === 'object' && row !== null) {
+        Object.assign(flattened, row);
+      }
+    }
+    // Also include any top-level keys that aren't 'rows'
+    for (const key in mergedData) {
+      if (key !== 'rows' && !(key in flattened)) {
+        flattened[key] = mergedData[key];
+      }
+    }
+    mergedData = flattened;
+  }
   
   const fillValue = mergedData[matchedKey];
   
@@ -442,7 +552,7 @@ async function fillSingleFieldFromMessage(payload: any) {
     return;
   }
   
-  console.log('Content: Found fill value for', matchedKey, '- length:', fillValue.length);
+  console.log('Content: Found fill value for', matchedKey, '- length:', typeof fillValue === 'string' ? fillValue.length : String(fillValue).length);
   
   const element = getElementByXPath(xpath) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement | null;
   
@@ -517,7 +627,7 @@ async function saveCurrentFormAsTemplate(payload: { name: string; profileId: str
   }
   
   const savedData = await getPrimaryFormData();
-  const matchedFields = matchFields(fields, savedData);
+  const matchedFields = await matchFields(fields, savedData);
   
   // Create field mappings
   const fieldMappings = matchedFields

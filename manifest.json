@@ -4,16 +4,17 @@
   "version": "1.0.0",
   "description": "Intelligent form auto-fill extension with AI-powered field matching",
   "icons": {
-    "16": "icons/formbot_beaver_transparent.png",
-    "48": "icons/formbot_beaver_transparent.png",
-    "128": "icons/formbot_beaver_transparent.png"
+    "16": "icons/formbot_head_16.png",
+    "48": "icons/formbot_head_48.png",
+    "128": "icons/formbot_head_128.png"
   },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
-      "16": "icons/formbot_beaver_transparent.png",
-      "48": "icons/formbot_beaver_transparent.png",
-      "128": "icons/formbot_beaver_transparent.png"
+      "16": "icons/formbot_head_16.png",
+      "32": "icons/formbot_head_32.png",
+      "48": "icons/formbot_head_48.png",
+      "128": "icons/formbot_head_128.png"
     }
   },
   "background": {

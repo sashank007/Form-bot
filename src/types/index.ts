@@ -9,6 +9,12 @@ export interface FormField {
   ariaLabel: string;
   value: string;
   xpath: string;
+  context?: {
+    sectionHeader?: string;
+    nearbyFields?: Array<{ label: string; name: string }>;
+    formPurpose?: string;
+    formType?: string;
+  };
 }
 
 export interface DetectedField {
@@ -16,6 +22,7 @@ export interface DetectedField {
   fieldType: FieldType;
   confidence: number;
   matchedKey?: string;
+  possibleMatches?: Array<{ key: string; confidence: number; reasoning?: string }>;
 }
 
 export interface FormData {

@@ -19,19 +19,35 @@ const DataManager: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
 
   useEffect(() => {
-    loadProfiles();
+    let isMounted = true;
+    
+    const loadProfilesSafe = async () => {
+      try {
+        const profiles = await getAllFormData();
+        if (isMounted) {
+          setProfiles(profiles);
+        }
+      } catch (error) {
+        if (isMounted) {
+          console.error('Failed to load profiles:', error);
+        }
+      }
+    };
+    
+    loadProfilesSafe();
     
     // Listen for storage changes to refresh when new profiles are added/updated
     const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }) => {
-      if (changes.formbot_data) {
+      if (changes.formbot_data && isMounted) {
         console.log('📥 Profile data changed, refreshing...');
-        loadProfiles();
+        loadProfilesSafe();
       }
     };
     
     chrome.storage.onChanged.addListener(handleStorageChange);
     
     return () => {
+      isMounted = false;
       chrome.storage.onChanged.removeListener(handleStorageChange);
     };
   }, []);
@@ -333,20 +349,34 @@ const DataManager: React.FC = () => {
           <div className="mb-6">
             <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Common Fields</h3>
             <div className="grid grid-cols-2 gap-4">
-              {commonFields.map(field => (
-                <div key={field.key}>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    {field.label}
-                  </label>
-                  <input
-                    type="text"
-                    value={editingData[field.key] || ''}
-                    onChange={(e) => updateField(field.key, e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-purple focus:border-transparent"
-                    placeholder={`Enter ${field.label.toLowerCase()}`}
-                  />
-                </div>
-              ))}
+              {commonFields.map(field => {
+                // Safely convert value to string for input field
+                const rawValue = editingData[field.key];
+                let stringValue: string;
+                if (rawValue === null || rawValue === undefined) {
+                  stringValue = '';
+                } else if (typeof rawValue === 'object') {
+                  // If it's an object or array, stringify it
+                  stringValue = JSON.stringify(rawValue);
+                } else {
+                  stringValue = String(rawValue);
+                }
+                
+                return (
+                  <div key={field.key}>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      {field.label}
+                    </label>
+                    <input
+                      type="text"
+                      value={stringValue}
+                      onChange={(e) => updateField(field.key, e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-purple focus:border-transparent"
+                      placeholder={`Enter ${field.label.toLowerCase()}`}
+                    />
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -355,31 +385,44 @@ const DataManager: React.FC = () => {
             <div className="mb-6">
               <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Custom Fields</h3>
               <div className="space-y-3">
-                {customFields.map(([key, value]) => (
-                  <div key={key} className="flex gap-2">
-                    <div className="flex-1">
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 capitalize">
-                        {key.replace(/([A-Z])/g, ' $1').trim()}
-                      </label>
-                      <input
-                        type="text"
-                        value={value}
-                        onChange={(e) => updateField(key, e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-purple focus:border-transparent"
-                        placeholder={`Enter ${key}`}
-                      />
+                {customFields.map(([key, value]) => {
+                  // Safely convert value to string for input field
+                  let stringValue: string;
+                  if (value === null || value === undefined) {
+                    stringValue = '';
+                  } else if (typeof value === 'object') {
+                    // If it's an object or array, stringify it
+                    stringValue = JSON.stringify(value);
+                  } else {
+                    stringValue = String(value);
+                  }
+                  
+                  return (
+                    <div key={key} className="flex gap-2">
+                      <div className="flex-1">
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 capitalize">
+                          {key.replace(/([A-Z])/g, ' $1').trim()}
+                        </label>
+                        <input
+                          type="text"
+                          value={stringValue}
+                          onChange={(e) => updateField(key, e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-purple focus:border-transparent"
+                          placeholder={`Enter ${key}`}
+                        />
+                      </div>
+                      <button
+                        onClick={() => deleteField(key)}
+                        className="mt-6 p-2 text-danger hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                        title="Delete field"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
                     </div>
-                    <button
-                      onClick={() => deleteField(key)}
-                      className="mt-6 p-2 text-danger hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
-                      title="Delete field"
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -454,14 +497,25 @@ const DataManager: React.FC = () => {
                     )}
                   </p>
                   <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
-                    {Object.entries(profile.data).slice(0, 6).map(([key, value]) => (
-                      value && (
+                    {Object.entries(profile.data).slice(0, 6).map(([key, value]) => {
+                      // Convert value to string safely - handle objects, arrays, null, undefined
+                      let displayValue: string;
+                      if (value === null || value === undefined) {
+                        return null;
+                      } else if (typeof value === 'object') {
+                        // If it's an object or array, stringify it
+                        displayValue = JSON.stringify(value);
+                      } else {
+                        displayValue = String(value);
+                      }
+                      
+                      return (
                         <div key={key}>
                           <span className="text-gray-600 dark:text-gray-400">{key}:</span>
-                          <span className="ml-1 text-gray-900 dark:text-gray-100">{value}</span>
+                          <span className="ml-1 text-gray-900 dark:text-gray-100">{displayValue}</span>
                         </div>
-                      )
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
                 <div className="flex gap-2 ml-4">

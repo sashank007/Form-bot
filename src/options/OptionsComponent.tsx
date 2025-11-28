@@ -20,15 +20,37 @@ const Options: React.FC = () => {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    loadSettings();
+    let isMounted = true;
+    
+    const load = async () => {
+      const loadedSettings = await getSettings();
+      if (isMounted) {
+        setSettings(loadedSettings);
+        setDarkMode(loadedSettings.darkMode);
+      }
+    };
+    
+    load();
+    
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   useEffect(() => {
+    const htmlElement = document.documentElement;
+    
     if (darkMode) {
-      document.documentElement.classList.add('dark');
+      htmlElement.classList.add('dark');
     } else {
-      document.documentElement.classList.remove('dark');
+      htmlElement.classList.remove('dark');
     }
+    
+    // Cleanup: ensure class is removed on unmount if needed
+    return () => {
+      // Don't remove on cleanup as it might affect other components
+      // The class will be managed by the darkMode state
+    };
   }, [darkMode]);
 
   const loadSettings = async () => {
@@ -63,7 +85,7 @@ const Options: React.FC = () => {
     );
   }
 
-  const beaverIconUrl = chrome.runtime.getURL('icons/formbot_beaver_icon.png');
+  const beaverIconUrl = chrome.runtime.getURL('icons/formbot_head.png');
 
   return (
     <div 
