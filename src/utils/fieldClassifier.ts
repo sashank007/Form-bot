@@ -92,6 +92,11 @@ export function classifyField(
   if (type === 'tel') {
     return { fieldType: 'phone', confidence: 95 };
   }
+  
+  // Special case: file input type
+  if (type === 'file') {
+    return { fieldType: 'file', confidence: 100 };
+  }
 
   let bestMatch: FieldType = 'unknown';
   let highestScore = 0;

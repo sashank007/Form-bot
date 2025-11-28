@@ -14,6 +14,8 @@ from botocore.config import Config
 from decimal import Decimal
 import urllib.request
 import urllib.parse
+import base64
+import uuid
 
 # Redis client (lazy initialization)
 redis_client = None
@@ -33,6 +35,11 @@ profiles_table_name = os.environ.get('PROFILES_TABLE', 'formbot-profiles')
 
 users_table = dynamodb.Table(users_table_name)
 profiles_table = dynamodb.Table(profiles_table_name)
+documents_table_name = os.environ.get('DOCUMENTS_TABLE', 'formbot-documents')
+documents_table = dynamodb.Table(documents_table_name)
+
+s3_client = boto3.client('s3')
+s3_bucket_name = os.environ.get('S3_BUCKET', 'formbot-documents')
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -124,6 +131,25 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         elif path == '/api/batch-field-mapping' and http_method == 'POST':
             return handle_batch_field_mapping(event, context)
+        
+        elif path == '/api/documents/upload' and http_method == 'POST':
+            return handle_document_upload(event, context)
+        
+        elif path == '/api/documents' and http_method == 'POST':
+            return handle_save_document(event, context)
+        
+        elif path == '/api/documents' and http_method == 'GET':
+            return handle_get_documents(event, context)
+        
+        elif path.startswith('/api/documents/') and http_method == 'GET':
+            document_id = path.split('/')[-1]
+            if document_id == 'presigned-url':
+                return handle_get_presigned_url(event, context)
+            else:
+                return handle_get_document(event, context)
+        
+        elif path.startswith('/api/documents/') and http_method == 'DELETE':
+            return handle_delete_document(event, context)
         
         elif path == '/health':
             return health_check()
@@ -2094,6 +2120,298 @@ def generate_field_signature_from_dict(field: Dict[str, Any]) -> str:
         hash_val = hash_val & hash_val
     
     return str(abs(hash_val))[:8]
+
+
+def handle_document_upload(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Upload document to S3
+    POST /api/documents/upload
+    Body: multipart/form-data with file, documentType, userId
+    """
+    try:
+        body = event.get('body', '')
+        is_base64 = event.get('isBase64Encoded', False)
+        
+        if is_base64:
+            body_bytes = base64.b64decode(body)
+        else:
+            body_bytes = body.encode('utf-8') if isinstance(body, str) else body
+        
+        headers = event.get('headers', {}) or {}
+        content_type = headers.get('content-type', headers.get('Content-Type', ''))
+        
+        user_id = None
+        file_data = None
+        file_name = None
+        document_type = 'other'
+        
+        if 'multipart/form-data' in content_type:
+            boundary = content_type.split('boundary=')[-1]
+            parts = body_bytes.split(f'--{boundary}'.encode())
+            
+            for part in parts:
+                if b'name="file"' in part:
+                    header_end = part.find(b'\r\n\r\n')
+                    if header_end > 0:
+                        file_data = part[header_end + 4:]
+                        filename_match = part.find(b'filename="')
+                        if filename_match > 0:
+                            filename_start = filename_match + 10
+                            filename_end = part.find(b'"', filename_start)
+                            file_name = part[filename_start:filename_end].decode('utf-8')
+                elif b'name="userId"' in part:
+                    header_end = part.find(b'\r\n\r\n')
+                    if header_end > 0:
+                        user_id = part[header_end + 4:].strip().decode('utf-8')
+                elif b'name="documentType"' in part:
+                    header_end = part.find(b'\r\n\r\n')
+                    if header_end > 0:
+                        document_type = part[header_end + 4:].strip().decode('utf-8')
+        
+        if not file_data:
+            return create_response(400, {'error': 'No file data provided'})
+        
+        if not user_id:
+            return create_response(400, {'error': 'userId is required'})
+        
+        if not file_name:
+            file_name = f"document_{uuid.uuid4().hex[:8]}_{int(time.time())}"
+        
+        s3_key = f"documents/{user_id}/{uuid.uuid4().hex[:8]}_{int(time.time())}_{file_name}"
+        
+        try:
+            s3_client.put_object(
+                Bucket=s3_bucket_name,
+                Key=s3_key,
+                Body=file_data,
+                ContentType='application/octet-stream'
+            )
+            
+            s3_url = f"https://{s3_bucket_name}.s3.amazonaws.com/{s3_key}"
+            
+            return create_response(200, {
+                's3Url': s3_url,
+                's3Key': s3_key,
+                'fileName': file_name
+            })
+        except Exception as s3_error:
+            print(f"❌ S3 upload error: {str(s3_error)}")
+            return create_response(500, {'error': f'S3 upload failed: {str(s3_error)}'})
+            
+    except Exception as e:
+        print(f"❌ Document upload error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return create_response(500, {'error': f'Upload failed: {str(e)}'})
+
+
+def handle_save_document(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Save document metadata to DynamoDB
+    POST /api/documents
+    Body: SubmittedDocument JSON
+    """
+    try:
+        body = json.loads(event.get('body', '{}'))
+        
+        document_id = body.get('id')
+        user_id = body.get('userId')
+        
+        if not document_id or not user_id:
+            return create_response(400, {'error': 'id and userId are required'})
+        
+        document_item = {
+            'documentId': document_id,
+            'userId': user_id,
+            's3Url': body.get('s3Url', ''),
+            's3Key': body.get('s3Key', ''),
+            'fileName': body.get('fileName', ''),
+            'fileType': body.get('fileType', ''),
+            'fileSize': Decimal(str(body.get('fileSize', 0))),
+            'documentType': body.get('documentType', 'other'),
+            'formUrl': body.get('formUrl', ''),
+            'formFieldName': body.get('formFieldName', ''),
+            'formFieldLabel': body.get('formFieldLabel', ''),
+            'submittedAt': Decimal(str(body.get('submittedAt', int(time.time())))),
+            'profileId': body.get('profileId', ''),
+            'timestamp': Decimal(str(int(time.time())))
+        }
+        
+        documents_table.put_item(Item=document_item)
+        
+        return create_response(200, {'success': True, 'documentId': document_id})
+        
+    except Exception as e:
+        print(f"❌ Save document error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return create_response(500, {'error': f'Save failed: {str(e)}'})
+
+
+def handle_get_documents(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Get all documents for a user
+    GET /api/documents?userId=xxx
+    """
+    try:
+        query_params = event.get('queryStringParameters') or {}
+        user_id = query_params.get('userId')
+        
+        if not user_id:
+            return create_response(400, {'error': 'userId is required'})
+        
+        try:
+            response = documents_table.query(
+                KeyConditionExpression=Key('userId').eq(user_id),
+                IndexName='submittedAt-index'
+            )
+        except:
+            response = documents_table.query(
+                KeyConditionExpression=Key('userId').eq(user_id)
+            )
+        
+        documents = []
+        for item in response.get('Items', []):
+            documents.append({
+                'id': item.get('documentId'),
+                'userId': item.get('userId'),
+                's3Url': item.get('s3Url'),
+                's3Key': item.get('s3Key'),
+                'fileName': item.get('fileName'),
+                'fileType': item.get('fileType'),
+                'fileSize': int(item.get('fileSize', 0)),
+                'documentType': item.get('documentType'),
+                'formUrl': item.get('formUrl'),
+                'formFieldName': item.get('formFieldName'),
+                'formFieldLabel': item.get('formFieldLabel'),
+                'submittedAt': int(item.get('submittedAt', 0)),
+                'profileId': item.get('profileId', '')
+            })
+        
+        documents.sort(key=lambda x: x['submittedAt'], reverse=True)
+        
+        return create_response(200, {'documents': documents})
+        
+    except Exception as e:
+        print(f"❌ Get documents error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return create_response(500, {'error': f'Get failed: {str(e)}'})
+
+
+def handle_get_presigned_url(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Get presigned URL for document download
+    GET /api/documents/presigned-url?s3Key=xxx
+    """
+    try:
+        query_params = event.get('queryStringParameters') or {}
+        s3_key = query_params.get('s3Key')
+        
+        if not s3_key:
+            return create_response(400, {'error': 's3Key is required'})
+        
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': s3_bucket_name, 'Key': s3_key},
+            ExpiresIn=3600
+        )
+        
+        return create_response(200, {'presignedUrl': presigned_url})
+        
+    except Exception as e:
+        print(f"❌ Presigned URL error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return create_response(500, {'error': f'Presigned URL failed: {str(e)}'})
+
+
+def handle_get_document(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Get specific document by ID
+    GET /api/documents/{documentId}
+    """
+    try:
+        document_id = event.get('path', '').split('/')[-1]
+        query_params = event.get('queryStringParameters') or {}
+        user_id = query_params.get('userId')
+        
+        if not document_id or not user_id:
+            return create_response(400, {'error': 'documentId and userId are required'})
+        
+        response = documents_table.get_item(
+            Key={'userId': user_id, 'documentId': document_id}
+        )
+        
+        if 'Item' not in response:
+            return create_response(404, {'error': 'Document not found'})
+        
+        item = response['Item']
+        document = {
+            'id': item.get('documentId'),
+            'userId': item.get('userId'),
+            's3Url': item.get('s3Url'),
+            's3Key': item.get('s3Key'),
+            'fileName': item.get('fileName'),
+            'fileType': item.get('fileType'),
+            'fileSize': int(item.get('fileSize', 0)),
+            'documentType': item.get('documentType'),
+            'formUrl': item.get('formUrl'),
+            'formFieldName': item.get('formFieldName'),
+            'formFieldLabel': item.get('formFieldLabel'),
+            'submittedAt': int(item.get('submittedAt', 0)),
+            'profileId': item.get('profileId', '')
+        }
+        
+        return create_response(200, {'document': document})
+        
+    except Exception as e:
+        print(f"❌ Get document error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return create_response(500, {'error': f'Get failed: {str(e)}'})
+
+
+def handle_delete_document(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Delete document from S3 and DynamoDB
+    DELETE /api/documents/{documentId}?userId=xxx
+    """
+    try:
+        document_id = event.get('path', '').split('/')[-1]
+        query_params = event.get('queryStringParameters') or {}
+        user_id = query_params.get('userId')
+        
+        if not document_id or not user_id:
+            return create_response(400, {'error': 'documentId and userId are required'})
+        
+        response = documents_table.get_item(
+            Key={'userId': user_id, 'documentId': document_id}
+        )
+        
+        if 'Item' not in response:
+            return create_response(404, {'error': 'Document not found'})
+        
+        item = response['Item']
+        s3_key = item.get('s3Key')
+        
+        if s3_key:
+            try:
+                s3_client.delete_object(Bucket=s3_bucket_name, Key=s3_key)
+            except Exception as s3_error:
+                print(f"⚠️ S3 delete error (continuing): {str(s3_error)}")
+        
+        documents_table.delete_item(
+            Key={'userId': user_id, 'documentId': document_id}
+        )
+        
+        return create_response(200, {'success': True})
+        
+    except Exception as e:
+        print(f"❌ Delete document error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return create_response(500, {'error': f'Delete failed: {str(e)}'})
 
 
 def decimal_default(obj):

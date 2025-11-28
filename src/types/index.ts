@@ -89,6 +89,7 @@ export type FieldType =
   | 'passportNumber'
   | 'licenseNumber'
   | 'idNumber'
+  | 'file'
   | 'unknown';
 
 export type ConfidenceLevel = 'high' | 'medium' | 'low';
@@ -162,6 +163,7 @@ export interface Message {
 }
 
 export type MessageType =
+  | 'GET_FIELD_VALUES'
   | 'FORM_DETECTED'
   | 'FILL_FORM'
   | 'FILL_SINGLE_FIELD'
@@ -196,5 +198,21 @@ export interface AIMatchRequest {
 export interface AIMatchResponse {
   matchedKey: string;
   confidence: number;
+}
+
+export interface SubmittedDocument {
+  id: string;
+  userId: string;
+  s3Url: string;
+  s3Key: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  documentType: string;
+  formUrl: string;
+  formFieldName: string;
+  formFieldLabel: string;
+  submittedAt: number;
+  profileId?: string;
 }
 

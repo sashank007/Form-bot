@@ -14,12 +14,18 @@ Resources:
       Environment:
         Variables:
           DYNAMODB_TABLE: form-bot-data
+          DOCUMENTS_TABLE: formbot-documents
+          S3_BUCKET: !Ref DocumentsBucket
           REDIS_HOST: formbot-redis-gz9sjn.serverless.use1.cache.amazonaws.com
           REDIS_PORT: '6379'
           REDIS_SSL: 'true'
       Policies:
         - DynamoDBCrudPolicy:
             TableName: form-bot-data
+        - DynamoDBCrudPolicy:
+            TableName: formbot-documents
+        - S3CrudPolicy:
+            BucketName: !Ref DocumentsBucket
       Events:
         # User Registration
         UserRegister:
@@ -108,6 +114,46 @@ Resources:
             Path: /api/batch-field-mapping
             Method: POST
             RestApiId: !Ref FormBotAPI
+        
+        # Document Upload
+        DocumentUpload:
+          Type: Api
+          Properties:
+            Path: /api/documents/upload
+            Method: POST
+            RestApiId: !Ref FormBotAPI
+        
+        # Save Document
+        SaveDocument:
+          Type: Api
+          Properties:
+            Path: /api/documents
+            Method: POST
+            RestApiId: !Ref FormBotAPI
+        
+        # Get Documents
+        GetDocuments:
+          Type: Api
+          Properties:
+            Path: /api/documents
+            Method: GET
+            RestApiId: !Ref FormBotAPI
+        
+        # Get Presigned URL
+        GetPresignedUrl:
+          Type: Api
+          Properties:
+            Path: /api/documents/presigned-url
+            Method: GET
+            RestApiId: !Ref FormBotAPI
+        
+        # Delete Document
+        DeleteDocument:
+          Type: Api
+          Properties:
+            Path: /api/documents/{documentId}
+            Method: DELETE
+            RestApiId: !Ref FormBotAPI
 
   # API Gateway
   FormBotAPI:
@@ -146,6 +192,52 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+
+  # Documents DynamoDB Table
+  DocumentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: formbot-documents
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: documentId
+          AttributeType: S
+        - AttributeName: submittedAt
+          AttributeType: N
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: documentId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: submittedAt-index
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: submittedAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  # S3 Bucket for Documents
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'formbot-documents-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
 
 Outputs:
   ApiUrl:

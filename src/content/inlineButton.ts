@@ -2,11 +2,15 @@
  * Inline auto-fill button functionality
  */
 
-import { DetectedField } from '../types';
+import { DetectedField, FormField } from '../types';
 import { getFillValue } from './fieldMatcher';
 import { getPrimaryFormData } from '../utils/storage';
 import { showFieldEditor, isComplexValue } from './fieldEditor';
 import { fillFieldWithEvents } from '../utils/eventSimulator';
+import { getSuggestedDocuments, fillFileUploadField } from '../utils/documentFiller';
+import { SubmittedDocument } from '../types';
+import { detectDateComponentGroups, parseDate, fillDateComponent, DateComponentGroup } from '../utils/dateFieldHandler';
+import { detectFormFields } from './formDetector';
 
 const BUTTON_ID_PREFIX = 'formbot-inline-btn-';
 const BUTTON_CLASS = 'formbot-inline-button';
@@ -283,7 +287,29 @@ export async function createInlineButton(detectedField: DetectedField, index: nu
   button.className = BUTTON_CLASS;
   button.setAttribute('type', 'button');
   button.setAttribute('aria-label', 'Auto-fill this field');
-  button.title = `Fill with saved data (${detectedField.confidence}% confidence)`;
+  
+  // Get fill value for tooltip
+  let fillValuePreview = '';
+  if (detectedField.matchedKey) {
+    try {
+      const savedData = await getPrimaryFormData();
+      const flattenedData = flattenDataForPreview(savedData);
+      const fillValue = getFillValue(
+        detectedField.field,
+        detectedField.fieldType,
+        detectedField.matchedKey,
+        flattenedData
+      );
+      if (fillValue) {
+        const displayValue = fillValue.length > 50 ? fillValue.substring(0, 50) + '...' : fillValue;
+        fillValuePreview = `\nValue: ${displayValue}`;
+      }
+    } catch (error) {
+      console.error('Failed to get fill value for tooltip:', error);
+    }
+  }
+  
+  button.title = `Fill with saved data (${detectedField.confidence}% confidence)${fillValuePreview}`;
   
   // Add beaver icon
   const beaverIconUrl = chrome.runtime.getURL('icons/formbot_head.png');
@@ -333,18 +359,90 @@ export async function createInlineButton(detectedField: DetectedField, index: nu
     }
   };
   
+  // Create custom tooltip for better value display
+  let tooltip: HTMLElement | null = null;
+  
+  const createTooltip = (value: string) => {
+    if (tooltip) {
+      tooltip.remove();
+    }
+    tooltip = document.createElement('div');
+    tooltip.className = 'formbot-button-tooltip';
+    tooltip.textContent = value.length > 100 ? value.substring(0, 100) + '...' : value;
+    Object.assign(tooltip.style, {
+      position: 'absolute',
+      zIndex: '9999999',
+      background: '#1f2937',
+      color: 'white',
+      padding: '8px 12px',
+      borderRadius: '6px',
+      fontSize: '12px',
+      maxWidth: '300px',
+      wordWrap: 'break-word',
+      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
+      pointerEvents: 'none',
+      whiteSpace: 'pre-wrap',
+      lineHeight: '1.4',
+    });
+    document.body.appendChild(tooltip);
+    return tooltip;
+  };
+  
+  const positionTooltip = (tooltipEl: HTMLElement, buttonEl: HTMLElement) => {
+    const buttonRect = buttonEl.getBoundingClientRect();
+    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+    const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+    
+    tooltipEl.style.top = `${buttonRect.top + scrollTop - tooltipEl.offsetHeight - 8}px`;
+    tooltipEl.style.left = `${buttonRect.left + scrollLeft + (buttonRect.width / 2) - (tooltipEl.offsetWidth / 2)}px`;
+    
+    // Adjust if tooltip goes off screen
+    const tooltipRect = tooltipEl.getBoundingClientRect();
+    if (tooltipRect.left < 10) {
+      tooltipEl.style.left = `${buttonRect.left + scrollLeft + 10}px`;
+    }
+    if (tooltipRect.right > window.innerWidth - 10) {
+      tooltipEl.style.left = `${buttonRect.right + scrollLeft - tooltipEl.offsetWidth - 10}px`;
+    }
+  };
+  
   // Hover effect on button
-  button.addEventListener('mouseenter', () => {
+  button.addEventListener('mouseenter', async () => {
     button.style.transform = 'scale(1.15)';
     button.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.25)';
     button.style.borderColor = '#8B5CF6';
     showPreview();
+    
+    // Show tooltip with value if available
+    if (detectedField.matchedKey) {
+      try {
+        const savedData = await getPrimaryFormData();
+        const flattenedData = flattenDataForPreview(savedData);
+        const fillValue = getFillValue(
+          detectedField.field,
+          detectedField.fieldType,
+          detectedField.matchedKey,
+          flattenedData
+        );
+        if (fillValue) {
+          const tooltipEl = createTooltip(fillValue);
+          positionTooltip(tooltipEl, button);
+        }
+      } catch (error) {
+        console.error('Failed to show tooltip:', error);
+      }
+    }
   });
   
   button.addEventListener('mouseleave', () => {
     button.style.transform = 'scale(1)';
     button.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.15)';
     button.style.borderColor = '#000000';
+    // Hide tooltip
+    if (tooltip) {
+      tooltip.remove();
+      tooltip = null;
+    }
     // Hide preview with delay
     setTimeout(() => {
       if (!preview.matches(':hover')) {
@@ -491,6 +589,22 @@ export function attachButtonListeners(detectedField: DetectedField, button: HTML
 }
 
 /**
+ * Find which date component group a field belongs to
+ */
+function findDateComponentGroupForField(field: FormField, allFields: FormField[]): DateComponentGroup | null {
+  const groups = detectDateComponentGroups(allFields);
+  
+  for (const group of groups) {
+    if (group.yearField === field || group.monthField === field || 
+        group.dayField === field || group.fullDateField === field) {
+      return group;
+    }
+  }
+  
+  return null;
+}
+
+/**
  * Fill a single field
  */
 async function fillSingleField(detectedField: DetectedField, button: HTMLButtonElement) {
@@ -524,6 +638,73 @@ async function fillSingleField(detectedField: DetectedField, button: HTMLButtonE
   console.log('Fill value found, length:', fillValue.length, 'Complex:', isComplexValue(fillValue));
   
   const element = detectedField.field.element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement;
+  
+  // Check if this field is part of a date component group
+  const allFields = detectFormFields();
+  const dateGroup = findDateComponentGroupForField(detectedField.field, allFields);
+  
+  if (dateGroup) {
+    console.log('📅 [DATE] Field is part of date component group, parsing date...');
+    const parsed = parseDate(fillValue);
+    
+    if (parsed) {
+      console.log(`📅 [DATE] Parsed date: ${parsed.year}-${parsed.monthNumber}-${parsed.day}`);
+      let filledAny = false;
+      
+      // Fill year component if this is the year field
+      if (dateGroup.yearField === detectedField.field) {
+        const success = fillDateComponent(dateGroup.yearField, parsed.year, 'year');
+        if (success) {
+          filledAny = true;
+          console.log('✅ [DATE] Filled year dropdown');
+        }
+      }
+      
+      // Fill month component if this is the month field
+      if (dateGroup.monthField === detectedField.field) {
+        let success = fillDateComponent(dateGroup.monthField, parsed.month, 'month');
+        if (!success) {
+          success = fillDateComponent(dateGroup.monthField, parsed.monthNumber, 'month');
+        }
+        if (success) {
+          filledAny = true;
+          console.log('✅ [DATE] Filled month dropdown');
+        }
+      }
+      
+      // Fill day component if this is the day field
+      if (dateGroup.dayField === detectedField.field) {
+        const success = fillDateComponent(dateGroup.dayField, parsed.day, 'day');
+        if (success) {
+          filledAny = true;
+          console.log('✅ [DATE] Filled day dropdown');
+        }
+      }
+      
+      // Also fill other components in the group if they exist and aren't filled yet
+      if (dateGroup.yearField && dateGroup.yearField !== detectedField.field) {
+        fillDateComponent(dateGroup.yearField, parsed.year, 'year');
+      }
+      if (dateGroup.monthField && dateGroup.monthField !== detectedField.field) {
+        fillDateComponent(dateGroup.monthField, parsed.month, 'month') ||
+        fillDateComponent(dateGroup.monthField, parsed.monthNumber, 'month');
+      }
+      if (dateGroup.dayField && dateGroup.dayField !== detectedField.field) {
+        fillDateComponent(dateGroup.dayField, parsed.day, 'day');
+      }
+      
+      if (filledAny) {
+        element.classList.add('formbot-highlight-success');
+        setTimeout(() => {
+          element.classList.remove('formbot-highlight-success');
+        }, 2000);
+        showFillSuccess(button);
+        return;
+      }
+    } else {
+      console.log('⚠️ [DATE] Could not parse date value:', fillValue);
+    }
+  }
   
   // Check if value is complex (needs editing)
   if (isComplexValue(fillValue)) {
@@ -590,6 +771,208 @@ function showFillSuccess(button: HTMLButtonElement) {
 /**
  * Remove all inline buttons and previews
  */
+async function createDocumentPickerButton(
+  detectedField: DetectedField,
+  index: number,
+  fileInput: HTMLInputElement
+): Promise<{ button: HTMLButtonElement }> {
+  const button = document.createElement('button');
+  button.id = `${BUTTON_ID_PREFIX}${index}`;
+  button.className = BUTTON_CLASS;
+  button.innerHTML = `
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+      <polyline points="14 2 14 8 20 8"></polyline>
+      <line x1="16" y1="13" x2="8" y2="13"></line>
+      <line x1="16" y1="17" x2="8" y2="17"></line>
+      <polyline points="10 9 9 9 8 9"></polyline>
+    </svg>
+    <span>Pick Document</span>
+  `;
+  button.setAttribute('type', 'button');
+  button.setAttribute('title', 'Select from previously submitted documents');
+  
+  button.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    
+    try {
+      const documents = await getSuggestedDocuments(fileInput);
+      
+      if (documents.length === 0) {
+        alert('No matching documents found. Submit a form with a file upload first.');
+        return;
+      }
+      
+      if (documents.length === 1) {
+        await fillFileUploadField(fileInput, documents[0]);
+        showFillSuccess(button);
+        return;
+      }
+      
+      const selected = await showDocumentPicker(documents);
+      if (selected) {
+        await fillFileUploadField(fileInput, selected);
+        showFillSuccess(button);
+      }
+    } catch (error) {
+      console.error('Failed to fill file upload:', error);
+      alert('Failed to fill file upload field');
+    }
+  });
+  
+  return { button };
+}
+
+function showDocumentPicker(documents: SubmittedDocument[]): Promise<SubmittedDocument | null> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 999999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    `;
+    
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 500px;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    `;
+    
+    modal.innerHTML = `
+      <h3 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600;">Select Document</h3>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        ${documents.map((doc, idx) => `
+          <button class="doc-picker-item" data-index="${idx}" style="
+            padding: 12px;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            text-align: left;
+            cursor: pointer;
+            background: white;
+            transition: all 0.2s;
+          ">
+            <div style="font-weight: 500; margin-bottom: 4px;">${doc.fileName}</div>
+            <div style="font-size: 12px; color: #6b7280;">
+              ${new Date(doc.submittedAt).toLocaleDateString()} • ${(doc.fileSize / 1024).toFixed(1)} KB
+            </div>
+          </button>
+        `).join('')}
+      </div>
+      <button class="doc-picker-cancel" style="
+        margin-top: 16px;
+        padding: 8px 16px;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        background: white;
+        cursor: pointer;
+        width: 100%;
+      ">Cancel</button>
+    `;
+    
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    
+    const items = modal.querySelectorAll('.doc-picker-item');
+    items.forEach((item, idx) => {
+      item.addEventListener('click', () => {
+        document.body.removeChild(overlay);
+        resolve(documents[idx]);
+      });
+      item.addEventListener('mouseenter', function(this: HTMLElement) {
+        this.style.background = '#f3f4f6';
+        this.style.borderColor = '#d1d5db';
+      });
+      item.addEventListener('mouseleave', function(this: HTMLElement) {
+        this.style.background = 'white';
+        this.style.borderColor = '#e5e7eb';
+      });
+    });
+    
+    const cancelBtn = modal.querySelector('.doc-picker-cancel');
+    cancelBtn?.addEventListener('click', () => {
+      document.body.removeChild(overlay);
+      resolve(null);
+    });
+    
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) {
+        document.body.removeChild(overlay);
+        resolve(null);
+      }
+    });
+  });
+}
+
+function attachFileButtonListeners(
+  detectedField: DetectedField,
+  button: HTMLButtonElement,
+  fileInput: HTMLInputElement
+) {
+  const showButton = () => {
+    positionButton(button, fileInput);
+  };
+  
+  const hideButton = () => {
+    button.style.display = 'none';
+  };
+  
+  fileInput.addEventListener('focus', showButton);
+  fileInput.addEventListener('mouseenter', showButton);
+  
+  let hideTimeout: number;
+  fileInput.addEventListener('mouseleave', () => {
+    hideTimeout = window.setTimeout(() => {
+      if (!button.matches(':hover')) {
+        hideButton();
+      }
+    }, 300);
+  });
+  
+  button.addEventListener('mouseenter', () => {
+    clearTimeout(hideTimeout);
+    showButton();
+  });
+  
+  button.addEventListener('mouseleave', () => {
+    if (!fileInput.matches(':focus, :hover')) {
+      hideButton();
+    }
+  });
+  
+  fileInput.addEventListener('blur', () => {
+    setTimeout(() => {
+      if (!button.matches(':hover')) {
+        hideButton();
+      }
+    }, 200);
+  });
+  
+  window.addEventListener('scroll', () => {
+    if (button.style.display === 'block') {
+      positionButton(button, fileInput);
+    }
+  }, { passive: true });
+  
+  window.addEventListener('resize', () => {
+    if (button.style.display === 'block') {
+      positionButton(button, fileInput);
+    }
+  }, { passive: true });
+}
+
 export function removeAllInlineButtons() {
   const buttons = document.querySelectorAll(`.${BUTTON_CLASS}`);
   buttons.forEach(btn => btn.remove());
@@ -610,6 +993,15 @@ export async function setupInlineButtons(detectedFields: DetectedField[]) {
     
     // Skip password fields and very low confidence
     if (detectedField.fieldType === 'password' || detectedField.confidence < 50) {
+      continue;
+    }
+    
+    // Handle file upload fields differently
+    if (detectedField.fieldType === 'file' || detectedField.field.type === 'file') {
+      const fileInput = detectedField.field.element as HTMLInputElement;
+      const { button } = await createDocumentPickerButton(detectedField, index, fileInput);
+      document.body.appendChild(button);
+      attachFileButtonListeners(detectedField, button, fileInput);
       continue;
     }
     

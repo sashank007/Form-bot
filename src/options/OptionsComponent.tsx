@@ -9,12 +9,13 @@ import ResumeProfile from './components/ResumeProfile';
 import TemplateManager from './components/TemplateManager';
 import SecretsManager from './components/SecretsManager';
 import DocumentScanner from './components/DocumentScanner';
+import DocumentHistory from './components/DocumentHistory';
 import EnterpriseSettings from './components/EnterpriseSettings';
 import { Settings } from '../types';
 import { getSettings, saveSettings } from '../utils/storage';
 
 const Options: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'data' | 'templates' | 'secrets' | 'scanner' | 'resume' | 'enterprise' | 'settings'>('data');
+  const [activeTab, setActiveTab] = useState<'data' | 'templates' | 'secrets' | 'scanner' | 'documents' | 'resume' | 'enterprise' | 'settings'>('data');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [darkMode, setDarkMode] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -170,6 +171,16 @@ const Options: React.FC = () => {
               Document Scanner
             </button>
             <button
+              onClick={() => setActiveTab('documents')}
+              className={`py-4 px-2 border-b-2 font-medium transition-colors ${
+                activeTab === 'documents'
+                  ? 'border-primary-purple text-primary-purple'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+              }`}
+            >
+              Document History
+            </button>
+            <button
               onClick={() => setActiveTab('resume')}
               className={`py-4 px-2 border-b-2 font-medium transition-colors ${
                 activeTab === 'resume'
@@ -209,6 +220,7 @@ const Options: React.FC = () => {
         {activeTab === 'templates' && <TemplateManager />}
         {activeTab === 'secrets' && <SecretsManager />}
         {activeTab === 'scanner' && <DocumentScanner settings={settings} />}
+        {activeTab === 'documents' && <DocumentHistory />}
         {activeTab === 'resume' && <ResumeProfile settings={settings} onChange={handleSettingsChange} />}
         {activeTab === 'enterprise' && <EnterpriseSettings settings={settings} onChange={handleSettingsChange} />}
         {activeTab === 'settings' && <PrivacySettings settings={settings} onChange={handleSettingsChange} />}

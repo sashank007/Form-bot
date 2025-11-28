@@ -2,7 +2,7 @@
  * Content script - runs on all web pages
  */
 
-import { Message, DetectedField, FormDetectionResult, FormTemplate } from '../types';
+import { Message, DetectedField, FormDetectionResult, FormTemplate, FormField } from '../types';
 import { detectFormFields, countForms, observeFormChanges, getElementByXPath, highlightField, removeHighlight, removeAllHighlights } from './formDetector';
 import { matchFields, getFillValue } from './fieldMatcher';
 import { getPrimaryFormData, saveLastFill, getLastFill, getSettings, getFormDataById, onProfileChange } from '../utils/storage';
@@ -18,6 +18,11 @@ import { analyzeAllFieldsWithAI, applyAIAnalysisResults } from '../utils/aiCompr
 import { fillFieldWithEvents } from '../utils/eventSimulator';
 import { analyzeField } from '../utils/fieldPurposeIdentifier';
 import { sendToZapier, extractFilledFormData } from '../utils/zapierIntegration';
+import { uploadDocumentToS3 } from '../utils/s3Upload';
+import { saveSubmittedDocument, inferDocumentTypeFromFile } from '../utils/documentStorage';
+import { getAuth } from '../utils/googleAuth';
+import { SubmittedDocument } from '../types';
+import { detectDateComponentGroups, parseDate, fillDateComponent } from '../utils/dateFieldHandler';
 import { batchMatchAllFields } from '../utils/batchAIMatcher';
 import { classifyField } from '../utils/fieldClassifier';
 
@@ -294,6 +299,25 @@ async function handleMessage(message: Message, sendResponse: (response?: any) =>
       sendResponse({ data: filledData });
       break;
       
+    case 'GET_FIELD_VALUES':
+      const xpaths = message.payload?.xpaths || [];
+      const values: { [key: string]: string } = {};
+      for (const xpath of xpaths) {
+        const element = getElementByXPath(xpath);
+        if (element) {
+          if (element.tagName === 'SELECT') {
+            const select = element as HTMLSelectElement;
+            values[xpath] = select.options[select.selectedIndex]?.text || select.value || '';
+          } else if ((element as HTMLInputElement).value !== undefined) {
+            values[xpath] = (element as HTMLInputElement).value || '';
+          } else if ((element as HTMLElement).textContent) {
+            values[xpath] = (element as HTMLElement).textContent?.trim() || '';
+          }
+        }
+      }
+      sendResponse({ values });
+      break;
+      
     default:
       sendResponse({ error: 'Unknown message type' });
   }
@@ -367,7 +391,105 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
   
   showProgressIndicator(0, totalToFill);
   
-  for (const detectedField of detectedFields) {
+  const allFields = detectedFields.map(df => df.field);
+  const dateGroups = detectDateComponentGroups(allFields);
+  const processedDateFields = new Set<number>();
+
+  for (const dateGroup of dateGroups) {
+    const groupFields = [dateGroup.yearField, dateGroup.monthField, dateGroup.dayField, dateGroup.fullDateField].filter(f => f !== null) as FormField[];
+    
+    if (groupFields.length === 0) continue;
+
+    let dateValue: string | null = null;
+    let matchedKey: string | null = null;
+
+    for (const groupField of groupFields) {
+      const detectedField = detectedFields.find(df => df.field === groupField);
+      if (detectedField && detectedField.matchedKey && detectedField.confidence >= minConfidence) {
+        const value = getFillValue(
+          detectedField.field,
+          detectedField.fieldType,
+          detectedField.matchedKey,
+          mergedData
+        );
+        if (value) {
+          dateValue = value;
+          matchedKey = detectedField.matchedKey;
+          break;
+        }
+      }
+    }
+
+    if (!dateValue || !matchedKey) continue;
+
+    const parsed = parseDate(dateValue);
+    if (!parsed) continue;
+
+    console.log(`📅 [DATE] Filling date components for ${matchedKey}: ${parsed.year}-${parsed.monthNumber}-${parsed.day}`);
+
+    if (dateGroup.yearField) {
+      const yearFieldIndex = detectedFields.findIndex(df => df.field === dateGroup.yearField);
+      if (yearFieldIndex >= 0) {
+        processedDateFields.add(yearFieldIndex);
+        const success = fillDateComponent(dateGroup.yearField, parsed.year, 'year');
+        if (success) {
+          filledCount++;
+          if (shouldHighlight) {
+            highlightField(dateGroup.yearField.element as HTMLElement, 'success');
+            setTimeout(() => removeHighlight(dateGroup.yearField!.element as HTMLElement), 2000);
+          }
+        }
+      }
+    }
+
+    if (dateGroup.monthField) {
+      const monthFieldIndex = detectedFields.findIndex(df => df.field === dateGroup.monthField);
+      if (monthFieldIndex >= 0) {
+        processedDateFields.add(monthFieldIndex);
+        let success = fillDateComponent(dateGroup.monthField, parsed.month, 'month');
+        if (!success) {
+          success = fillDateComponent(dateGroup.monthField, parsed.monthNumber, 'month');
+        }
+        if (success) {
+          filledCount++;
+          if (shouldHighlight) {
+            highlightField(dateGroup.monthField.element as HTMLElement, 'success');
+            setTimeout(() => removeHighlight(dateGroup.monthField!.element as HTMLElement), 2000);
+          }
+        }
+      }
+    }
+
+    if (dateGroup.dayField) {
+      const dayFieldIndex = detectedFields.findIndex(df => df.field === dateGroup.dayField);
+      if (dayFieldIndex >= 0) {
+        processedDateFields.add(dayFieldIndex);
+        const success = fillDateComponent(dateGroup.dayField, parsed.day, 'day');
+        if (success) {
+          filledCount++;
+          if (shouldHighlight) {
+            highlightField(dateGroup.dayField.element as HTMLElement, 'success');
+            setTimeout(() => removeHighlight(dateGroup.dayField!.element as HTMLElement), 2000);
+          }
+        }
+      }
+    }
+
+    if (dateGroup.fullDateField) {
+      const fullDateFieldIndex = detectedFields.findIndex(df => df.field === dateGroup.fullDateField);
+      if (fullDateFieldIndex >= 0) {
+        processedDateFields.add(fullDateFieldIndex);
+      }
+    }
+  }
+
+  for (let i = 0; i < detectedFields.length; i++) {
+    if (processedDateFields.has(i)) {
+      continue;
+    }
+
+    const detectedField = detectedFields[i];
+    
     // Skip low confidence matches
     if (detectedField.confidence < minConfidence) {
       console.log('Content: Skipping low confidence field:', detectedField.field.label, detectedField.confidence);
@@ -874,6 +996,55 @@ async function handleFormSubmit(event: Event) {
     if (!settings.zapierWebhookUrl) console.log('  Reason: Webhook URL not configured');
   }
   
+  // Extract and upload file inputs before submission
+  const fileInputs = form.querySelectorAll<HTMLInputElement>('input[type="file"]');
+  const uploadedDocuments: SubmittedDocument[] = [];
+  
+  if (fileInputs.length > 0) {
+    console.log(`📎 Found ${fileInputs.length} file input(s), uploading documents...`);
+    const auth = await getAuth();
+    
+    for (const fileInput of fileInputs) {
+      if (fileInput.files && fileInput.files.length > 0) {
+        for (let i = 0; i < fileInput.files.length; i++) {
+          const file = fileInput.files[i];
+          const fieldLabel = detectedFields.find(df => df.field.name === fileInput.name)?.field.label || fileInput.getAttribute('aria-label') || fileInput.name;
+          const documentType = inferDocumentTypeFromFile(file, fieldLabel);
+          
+          try {
+            console.log(`📤 Uploading file: ${file.name} (${(file.size / 1024).toFixed(1)}KB)`);
+            const uploadResult = await uploadDocumentToS3(file, documentType);
+            
+            const submittedDoc: SubmittedDocument = {
+              id: `doc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              userId: auth?.userId || 'anonymous',
+              s3Url: uploadResult.s3Url,
+              s3Key: uploadResult.s3Key,
+              fileName: file.name,
+              fileType: file.type,
+              fileSize: file.size,
+              documentType,
+              formUrl: window.location.href,
+              formFieldName: fileInput.name || 'file',
+              formFieldLabel: fieldLabel,
+              submittedAt: Date.now(),
+            };
+            
+            await saveSubmittedDocument(submittedDoc);
+            uploadedDocuments.push(submittedDoc);
+            console.log(`✅ Document uploaded: ${file.name} → ${uploadResult.s3Url}`);
+          } catch (error) {
+            console.error(`❌ Failed to upload document ${file.name}:`, error);
+          }
+        }
+      }
+    }
+    
+    if (uploadedDocuments.length > 0) {
+      console.log(`✅ Uploaded ${uploadedDocuments.length} document(s) to S3`);
+    }
+  }
+  
   // Get all filled field values from the form
   const formData = new FormData(form);
   const filledData: { [key: string]: string } = {};
@@ -903,7 +1074,7 @@ async function handleFormSubmit(event: Event) {
   });
   
   // If form has no data, allow submission
-  if (Object.keys(filledData).length === 0) {
+  if (Object.keys(filledData).length === 0 && uploadedDocuments.length === 0) {
     return;
   }
   

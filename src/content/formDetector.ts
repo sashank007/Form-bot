@@ -123,15 +123,17 @@ function extractFieldInfo(
     }
   }
   
+  const fieldType = element.getAttribute('type') || element.tagName.toLowerCase();
+  
   return {
     element,
-    type: element.getAttribute('type') || element.tagName.toLowerCase(),
+    type: fieldType,
     name: element.getAttribute('name') || '',
     id: element.id || '',
     placeholder: element.getAttribute('placeholder') || '',
     label: label,
     ariaLabel: element.getAttribute('aria-label') || '',
-    value: element.value || '',
+    value: fieldType === 'file' ? '' : (element.value || ''),
     xpath: getXPath(element),
   };
 }
@@ -241,7 +243,7 @@ function shouldIncludeInput(input: HTMLInputElement | HTMLTextAreaElement | HTML
   const type = input.getAttribute('type')?.toLowerCase();
   
   // Exclude certain input types
-  const excludedTypes = ['submit', 'button', 'reset', 'image', 'hidden', 'file'];
+  const excludedTypes = ['submit', 'button', 'reset', 'image', 'hidden'];
   if (type && excludedTypes.includes(type)) {
     return false;
   }

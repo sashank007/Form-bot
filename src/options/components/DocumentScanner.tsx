@@ -2,10 +2,13 @@
  * Document Scanner - Extract data from ID images using AI Vision
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Settings, SavedFormData } from '../../types';
 import { extractFromDocumentImage, validateImageFile } from '../../utils/documentScanner';
-import { saveFormData } from '../../utils/storage';
+import { saveFormData, getAllFormData } from '../../utils/storage';
+import { uploadDocumentToS3 } from '../../utils/s3Upload';
+import { saveSubmittedDocument } from '../../utils/documentStorage';
+import { getAuth } from '../../utils/googleAuth';
 
 interface DocumentScannerProps {
   settings: Settings;
@@ -14,9 +17,27 @@ interface DocumentScannerProps {
 const DocumentScanner: React.FC<DocumentScannerProps> = ({ settings }) => {
   const [scanning, setScanning] = useState(false);
   const [documentType, setDocumentType] = useState<'drivers_license' | 'passport' | 'id_card' | 'insurance' | 'other'>('drivers_license');
+  const [customDocumentLabel, setCustomDocumentLabel] = useState('');
   const [preview, setPreview] = useState<string | null>(null);
   const [extractedCount, setExtractedCount] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
+  const [scannedProfiles, setScannedProfiles] = useState<SavedFormData[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+
+  useEffect(() => {
+    loadScannedDocuments();
+  }, []);
+
+  const loadScannedDocuments = async () => {
+    try {
+      const allProfiles = await getAllFormData();
+      // Filter profiles that were created from document scans (they have IDs starting with "scan_")
+      const scanned = allProfiles.filter(p => p.id.startsWith('scan_'));
+      setScannedProfiles(scanned.sort((a, b) => b.createdAt - a.createdAt));
+    } catch (error) {
+      console.error('Failed to load scanned documents:', error);
+    }
+  };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -147,10 +168,53 @@ const DocumentScanner: React.FC<DocumentScannerProps> = ({ settings }) => {
 
       const fieldCount = Object.keys(flattenedData).length;
       
+      // Upload original file to S3
+      let s3Url = '';
+      let s3Key = '';
+      const auth = await getAuth();
+      
+      if (auth) {
+        try {
+          console.log('📤 Uploading scanned document to S3...');
+          const uploadResult = await uploadDocumentToS3(file, documentType);
+          s3Url = uploadResult.s3Url;
+          s3Key = uploadResult.s3Key;
+          console.log(`✅ Document uploaded to S3: ${s3Url}`);
+          
+          // Save document metadata for download
+          const submittedDoc = {
+            id: `scan_doc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            userId: auth.userId,
+            s3Url: uploadResult.s3Url,
+            s3Key: uploadResult.s3Key,
+            fileName: file.name,
+            fileType: file.type,
+            fileSize: file.size,
+            documentType: documentType === 'other' && customDocumentLabel.trim() ? customDocumentLabel.trim() : documentType,
+            formUrl: '', // Scanned, not from a form
+            formFieldName: 'scanner',
+            formFieldLabel: 'Document Scanner',
+            submittedAt: Date.now(),
+          };
+          
+          await saveSubmittedDocument(submittedDoc);
+          console.log('✅ Document metadata saved');
+        } catch (uploadError) {
+          console.warn('⚠️ Failed to upload scanned document to S3:', uploadError);
+          // Continue even if S3 upload fails - still save the profile
+        }
+      } else {
+        console.warn('⚠️ Not signed in - skipping S3 upload for scanned document');
+      }
+      
       // Save as new profile
+      const profileName = documentType === 'other' && customDocumentLabel.trim()
+        ? `${customDocumentLabel.trim()} Scan`
+        : `${documentType.replace('_', ' ')} Scan`;
+      
       const newProfile: SavedFormData = {
         id: `scan_${Date.now()}`,
-        name: `${documentType.replace('_', ' ')} Scan`,
+        name: profileName,
         data: flattenedData,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -160,12 +224,20 @@ const DocumentScanner: React.FC<DocumentScannerProps> = ({ settings }) => {
       
       setExtractedCount(fieldCount);
       
-      alert(`✅ Success!\n\nExtracted ${fieldCount} fields from ${documentType.replace('_', ' ')}.\n\nSaved as new profile: "${newProfile.name}"\n\nGo to Data Management tab to view and edit.`);
+      // Reload scanned documents list
+      await loadScannedDocuments();
       
-      // Clear preview after success
+      const successMessage = s3Url 
+        ? `✅ Success!\n\nExtracted ${fieldCount} fields from ${documentType === 'other' && customDocumentLabel.trim() ? customDocumentLabel.trim() : documentType.replace('_', ' ')}.\n\nSaved as new profile: "${newProfile.name}"\n\nOriginal document saved to cloud storage.\n\nGo to Data Management tab to view and edit, or Documents tab to download.`
+        : `✅ Success!\n\nExtracted ${fieldCount} fields from ${documentType === 'other' && customDocumentLabel.trim() ? customDocumentLabel.trim() : documentType.replace('_', ' ')}.\n\nSaved as new profile: "${newProfile.name}"\n\nNote: Original file not saved (sign in with Google to enable cloud storage).\n\nGo to Data Management tab to view and edit.`;
+      
+      alert(successMessage);
+      
+      // Clear preview and custom label after success
       setTimeout(() => {
         setPreview(null);
         setExtractedCount(0);
+        setCustomDocumentLabel('');
       }, 3000);
       
     } catch (error) {
@@ -207,7 +279,12 @@ const DocumentScanner: React.FC<DocumentScannerProps> = ({ settings }) => {
           ].map(type => (
             <button
               key={type.value}
-              onClick={() => setDocumentType(type.value as any)}
+              onClick={() => {
+                setDocumentType(type.value as any);
+                if (type.value !== 'other') {
+                  setCustomDocumentLabel('');
+                }
+              }}
               className={`p-4 rounded-lg border-2 transition-all ${
                 documentType === type.value
                   ? 'border-primary-purple bg-purple-50 dark:bg-purple-900/20'
@@ -221,6 +298,25 @@ const DocumentScanner: React.FC<DocumentScannerProps> = ({ settings }) => {
             </button>
           ))}
         </div>
+        
+        {/* Custom Label Input for "Other Document" */}
+        {documentType === 'other' && (
+          <div className="mt-4">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Document Label:
+            </label>
+            <input
+              type="text"
+              value={customDocumentLabel}
+              onChange={(e) => setCustomDocumentLabel(e.target.value)}
+              placeholder="e.g., Certificate, Diploma, Contract..."
+              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-purple focus:border-transparent"
+            />
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Enter a label to identify this document type
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Upload Area */}
@@ -355,6 +451,94 @@ const DocumentScanner: React.FC<DocumentScannerProps> = ({ settings }) => {
             </ul>
           </div>
         </div>
+      </div>
+
+      {/* Scanned Documents History */}
+      <div className="bg-white dark:bg-gray-800 rounded-card shadow p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Scanned Documents History
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+              {scannedProfiles.length} document{scannedProfiles.length !== 1 ? 's' : ''} scanned
+            </p>
+          </div>
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className="px-4 py-2 text-sm font-medium text-primary-purple hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-lg transition-colors"
+          >
+            {showHistory ? '▲ Hide' : '▼ Show'}
+          </button>
+        </div>
+
+        {showHistory && (
+          <div className="space-y-3">
+            {scannedProfiles.length === 0 ? (
+              <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                <svg className="w-12 h-12 mx-auto mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <p>No documents scanned yet</p>
+                <p className="text-xs mt-1">Scan your first document above</p>
+              </div>
+            ) : (
+              scannedProfiles.map((profile) => {
+                const fieldCount = Object.keys(profile.data).length;
+                const scanDate = new Date(profile.createdAt).toLocaleDateString();
+                
+                return (
+                  <div
+                    key={profile.id}
+                    className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <h4 className="font-medium text-gray-900 dark:text-gray-100">
+                          {profile.name}
+                        </h4>
+                        <div className="mt-2 flex items-center gap-4 text-sm text-gray-600 dark:text-gray-400">
+                          <span>{fieldCount} field{fieldCount !== 1 ? 's' : ''} extracted</span>
+                          <span>•</span>
+                          <span>Scanned {scanDate}</span>
+                        </div>
+                        {Object.keys(profile.data).length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {Object.keys(profile.data).slice(0, 5).map((key) => (
+                              <span
+                                key={key}
+                                className="px-2 py-1 text-xs bg-gray-100 dark:bg-gray-700 rounded text-gray-700 dark:text-gray-300"
+                              >
+                                {key}
+                              </span>
+                            ))}
+                            {Object.keys(profile.data).length > 5 && (
+                              <span className="px-2 py-1 text-xs text-gray-500 dark:text-gray-400">
+                                +{Object.keys(profile.data).length - 5} more
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => {
+                          // Switch to Data Management tab and highlight this profile
+                          chrome.runtime.sendMessage({
+                            type: 'OPEN_OPTIONS',
+                            payload: { tab: 'data', highlightProfileId: profile.id }
+                          });
+                        }}
+                        className="ml-4 px-3 py-1.5 text-sm font-medium text-primary-purple hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded transition-colors"
+                      >
+                        View Profile
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
