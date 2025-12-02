@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scale Icon128</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 900px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    .preview {
+      display: flex;
+      gap: 30px;
+      margin: 30px 0;
+      align-items: center;
+    }
+    .preview-box {
+      text-align: center;
+    }
+    canvas {
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      background: white;
+    }
+    .controls {
+      margin: 20px 0;
+    }
+    label {
+      display: block;
+      margin: 10px 0 5px;
+      font-weight: bold;
+    }
+    input[type="range"] {
+      width: 100%;
+    }
+    button {
+      background: #3B82F6;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 16px;
+      margin: 10px 5px;
+    }
+    button:hover {
+      background: #2563EB;
+    }
+    .value {
+      font-family: monospace;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Scale Icon128 for Chrome Toolbar</h1>
+    <p>Adjust the scale to make your icon fill more of the canvas</p>
+
+    <div class="controls">
+      <label>Scale: <span class="value" id="scaleValue">2.5x</span></label>
+      <input type="range" id="scale" min="1" max="4" step="0.1" value="2.5">
+      
+      <label>Horizontal Position: <span class="value" id="offsetXValue">0px</span></label>
+      <input type="range" id="offsetX" min="-64" max="64" step="1" value="0">
+      
+      <label>Vertical Position: <span class="value" id="offsetYValue">0px</span></label>
+      <input type="range" id="offsetY" min="-64" max="64" step="1" value="0">
+    </div>
+
+    <div class="preview">
+      <div class="preview-box">
+        <h3>Original</h3>
+        <canvas id="original" width="128" height="128"></canvas>
+      </div>
+      <div class="preview-box">
+        <h3>Scaled (Preview)</h3>
+        <canvas id="scaled" width="128" height="128"></canvas>
+      </div>
+      <div class="preview-box">
+        <h3>Toolbar Size (32px)</h3>
+        <canvas id="toolbar" width="32" height="32"></canvas>
+      </div>
+    </div>
+
+    <button onclick="downloadScaled()">💾 Download Scaled icon128.png</button>
+    <button onclick="resetSettings()">🔄 Reset</button>
+  </div>
+
+  <script>
+    const img = new Image();
+    const scaleSlider = document.getElementById('scale');
+    const offsetXSlider = document.getElementById('offsetX');
+    const offsetYSlider = document.getElementById('offsetY');
+    
+    img.onload = function() {
+      updatePreview();
+    };
+    
+    // Load the existing icon128.png
+    img.src = 'icon128.png';
+    
+    scaleSlider.addEventListener('input', updatePreview);
+    offsetXSlider.addEventListener('input', updatePreview);
+    offsetYSlider.addEventListener('input', updatePreview);
+    
+    function updatePreview() {
+      const scale = parseFloat(scaleSlider.value);
+      const offsetX = parseInt(offsetXSlider.value);
+      const offsetY = parseInt(offsetYSlider.value);
+      
+      document.getElementById('scaleValue').textContent = scale.toFixed(1) + 'x';
+      document.getElementById('offsetXValue').textContent = offsetX + 'px';
+      document.getElementById('offsetYValue').textContent = offsetY + 'px';
+      
+      // Draw original
+      const originalCanvas = document.getElementById('original');
+      const originalCtx = originalCanvas.getContext('2d');
+      originalCtx.clearRect(0, 0, 128, 128);
+      originalCtx.drawImage(img, 0, 0, 128, 128);
+      
+      // Draw scaled
+      const scaledCanvas = document.getElementById('scaled');
+      const scaledCtx = scaledCanvas.getContext('2d');
+      scaledCtx.clearRect(0, 0, 128, 128);
+      
+      const scaledWidth = 128 * scale;
+      const scaledHeight = 128 * scale;
+      const x = (128 - scaledWidth) / 2 + offsetX;
+      const y = (128 - scaledHeight) / 2 + offsetY;
+      
+      scaledCtx.drawImage(img, x, y, scaledWidth, scaledHeight);
+      
+      // Draw toolbar preview
+      const toolbarCanvas = document.getElementById('toolbar');
+      const toolbarCtx = toolbarCanvas.getContext('2d');
+      toolbarCtx.clearRect(0, 0, 32, 32);
+      toolbarCtx.drawImage(scaledCanvas, 0, 0, 32, 32);
+    }
+    
+    function downloadScaled() {
+      const canvas = document.getElementById('scaled');
+      const link = document.createElement('a');
+      link.download = 'icon128.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+      alert('Downloaded! Replace the icon128.png in public/icons/ with this file, then rebuild.');
+    }
+    
+    function resetSettings() {
+      scaleSlider.value = 2.5;
+      offsetXSlider.value = 0;
+      offsetYSlider.value = 0;
+      updatePreview();
+    }
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zoom Formbot Icon</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 1000px;
+      margin: 30px auto;
+      padding: 20px;
+      background: linear-gradient(135deg, #8B4513 0%, #D2691E 100%);
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    }
+    h1 {
+      color: #8B4513;
+      margin-top: 0;
+    }
+    .preview {
+      display: flex;
+      gap: 30px;
+      margin: 30px 0;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .preview-box {
+      text-align: center;
+      background: #f9f9f9;
+      padding: 20px;
+      border-radius: 8px;
+      border: 2px solid #ddd;
+    }
+    canvas {
+      border: 2px solid #8B4513;
+      border-radius: 8px;
+      background: white;
+      display: block;
+      margin: 10px auto;
+    }
+    .controls {
+      background: #f9f9f9;
+      padding: 20px;
+      border-radius: 8px;
+      margin: 20px 0;
+    }
+    label {
+      display: block;
+      margin: 15px 0 5px;
+      font-weight: bold;
+      color: #333;
+    }
+    input[type="range"] {
+      width: 100%;
+      height: 8px;
+    }
+    button {
+      background: linear-gradient(135deg, #8B4513 0%, #D2691E 100%);
+      color: white;
+      border: none;
+      padding: 14px 28px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: bold;
+      margin: 10px 5px;
+      transition: transform 0.2s;
+    }
+    button:hover {
+      transform: scale(1.05);
+    }
+    .value {
+      font-family: monospace;
+      color: #8B4513;
+      font-size: 18px;
+      font-weight: bold;
+    }
+    .instructions {
+      background: #fff3cd;
+      padding: 20px;
+      border-radius: 8px;
+      margin-top: 20px;
+      border-left: 4px solid #D2691E;
+    }
+    .toolbar-preview {
+      background: #e8e8e8;
+      padding: 8px;
+      border-radius: 4px;
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🤖 Zoom Formbot Icon for Chrome Toolbar</h1>
+    <p>Adjust the zoom to make the beaver robot fill more of the icon space</p>
+
+    <div class="controls">
+      <label>Zoom Level: <span class="value" id="scaleValue">2.0x</span></label>
+      <input type="range" id="scale" min="1.5" max="4" step="0.1" value="2.0">
+      
+      <label>Center Horizontally: <span class="value" id="offsetXValue">0px</span></label>
+      <input type="range" id="offsetX" min="-50" max="50" step="1" value="0">
+      
+      <label>Center Vertically: <span class="value" id="offsetYValue">-10px</span></label>
+      <input type="range" id="offsetY" min="-50" max="50" step="1" value="-10">
+    </div>
+
+    <div class="preview">
+      <div class="preview-box">
+        <h3>Original</h3>
+        <canvas id="original" width="128" height="128"></canvas>
+        <p style="font-size: 12px; color: #666;">Too much space around beaver</p>
+      </div>
+
+      <div class="preview-box">
+        <h3>Zoomed (128x128)</h3>
+        <canvas id="scaled" width="128" height="128"></canvas>
+        <p style="font-size: 12px; color: #666;">Extension icon size</p>
+      </div>
+
+      <div class="preview-box">
+        <h3>Chrome Toolbar Preview</h3>
+        <div class="toolbar-preview">
+          <canvas id="toolbar" width="32" height="32"></canvas>
+          <span style="font-size: 14px;">How it looks in toolbar →</span>
+        </div>
+        <p style="font-size: 12px; color: #666;">Actual size in browser</p>
+      </div>
+
+      <div class="preview-box">
+        <h3>16x16 Preview</h3>
+        <canvas id="small" width="16" height="16"></canvas>
+        <p style="font-size: 12px; color: #666;">Small icons</p>
+      </div>
+    </div>
+
+    <div style="text-align: center; margin: 30px 0;">
+      <button onclick="downloadZoomed()" style="font-size: 18px; padding: 16px 32px;">
+        💾 Download Zoomed formbot_icon.png
+      </button>
+      <button onclick="resetSettings()" style="background: #666;">
+        🔄 Reset to Default
+      </button>
+    </div>
+
+    <div class="instructions">
+      <h3 style="margin-top: 0;">📝 How to use:</h3>
+      <ol style="line-height: 1.8;">
+        <li>Adjust the <strong>Zoom Level</strong> slider to make the beaver bigger (2-3x works well)</li>
+        <li>Use the position sliders to center the beaver perfectly</li>
+        <li>Check the "Chrome Toolbar Preview" to see how it will look</li>
+        <li>Click <strong>"Download Zoomed formbot_icon.png"</strong></li>
+        <li>Replace <code>public/icons/formbot_icon.png</code> with the downloaded file</li>
+        <li>Run <code>npm run build</code> to rebuild</li>
+      </ol>
+      <p><strong>Tip:</strong> A zoom of 2.0-2.5x usually works best for toolbar visibility!</p>
+    </div>
+  </div>
+
+  <script>
+    const img = new Image();
+    const scaleSlider = document.getElementById('scale');
+    const offsetXSlider = document.getElementById('offsetX');
+    const offsetYSlider = document.getElementById('offsetY');
+    
+    img.onload = function() {
+      updatePreview();
+    };
+    
+    img.src = 'formbot_icon.png';
+    
+    scaleSlider.addEventListener('input', updatePreview);
+    offsetXSlider.addEventListener('input', updatePreview);
+    offsetYSlider.addEventListener('input', updatePreview);
+    
+    function updatePreview() {
+      const scale = parseFloat(scaleSlider.value);
+      const offsetX = parseInt(offsetXSlider.value);
+      const offsetY = parseInt(offsetYSlider.value);
+      
+      document.getElementById('scaleValue').textContent = scale.toFixed(1) + 'x';
+      document.getElementById('offsetXValue').textContent = offsetX + 'px';
+      document.getElementById('offsetYValue').textContent = offsetY + 'px';
+      
+      // Draw original
+      const originalCanvas = document.getElementById('original');
+      const originalCtx = originalCanvas.getContext('2d');
+      originalCtx.clearRect(0, 0, 128, 128);
+      originalCtx.drawImage(img, 0, 0, 128, 128);
+      
+      // Draw zoomed 128x128
+      const scaledCanvas = document.getElementById('scaled');
+      const scaledCtx = scaledCanvas.getContext('2d');
+      scaledCtx.clearRect(0, 0, 128, 128);
+      
+      const scaledWidth = 128 * scale;
+      const scaledHeight = 128 * scale;
+      const x = (128 - scaledWidth) / 2 + offsetX;
+      const y = (128 - scaledHeight) / 2 + offsetY;
+      
+      scaledCtx.drawImage(img, x, y, scaledWidth, scaledHeight);
+      
+      // Draw toolbar preview (32x32)
+      const toolbarCanvas = document.getElementById('toolbar');
+      const toolbarCtx = toolbarCanvas.getContext('2d');
+      toolbarCtx.clearRect(0, 0, 32, 32);
+      toolbarCtx.drawImage(scaledCanvas, 0, 0, 32, 32);
+      
+      // Draw small preview (16x16)
+      const smallCanvas = document.getElementById('small');
+      const smallCtx = smallCanvas.getContext('2d');
+      smallCtx.clearRect(0, 0, 16, 16);
+      smallCtx.drawImage(scaledCanvas, 0, 0, 16, 16);
+    }
+    
+    function downloadZoomed() {
+      const canvas = document.getElementById('scaled');
+      const link = document.createElement('a');
+      link.download = 'formbot_icon.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+      
+      alert('✅ Downloaded!\n\n1. Replace public/icons/formbot_icon.png with the downloaded file\n2. Run: npm run build\n3. Reload your extension');
+    }
+    
+    function resetSettings() {
+      scaleSlider.value = 2.0;
+      offsetXSlider.value = 0;
+      offsetYSlider.value = -10;
+      updatePreview();
+    }
+  </script>
+</body>
+</html>
+

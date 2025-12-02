@@ -10,36 +10,30 @@ export function simulateTyping(
   element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement,
   value: string
 ): void {
-  console.log('Event Simulator: Simulating typing for', element.tagName);
+  console.log('Event Simulator: Simulating typing for', element.tagName, 'type:', element.getAttribute('type'), 'role:', element.getAttribute('role'));
 
-  // Focus the element first (important for React)
   if ('focus' in element && typeof element.focus === 'function') {
     element.focus();
   }
 
-  // Trigger focus event
   element.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
   element.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
 
-  // For contenteditable elements
   if ((element as HTMLElement).isContentEditable) {
     simulateContentEditableTyping(element as HTMLElement, value);
     return;
   }
 
-  // For ARIA listbox (Google Forms custom dropdowns)
-  if (element.getAttribute('role') === 'listbox') {
+  if (element.getAttribute('role') === 'listbox' || element.getAttribute('role') === 'combobox') {
     simulateListboxSelect(element as HTMLElement, value);
     return;
   }
 
-  // For select elements
   if (element.tagName === 'SELECT') {
     simulateSelectChange(element as HTMLSelectElement, value);
     return;
   }
 
-  // For input/textarea elements
   if ('value' in element) {
     simulateInputTyping(element as HTMLInputElement | HTMLTextAreaElement, value);
   }
@@ -154,29 +148,35 @@ function simulateContentEditableTyping(element: HTMLElement, value: string): voi
  * Simulate select dropdown change
  */
 function simulateSelectChange(element: HTMLSelectElement, value: string): void {
-  // Find matching option
   const options = Array.from(element.options);
   const matchingOption = options.find(opt => 
     opt.value === value || 
     opt.text === value ||
     opt.value.toLowerCase() === value.toLowerCase() ||
-    opt.text.toLowerCase() === value.toLowerCase()
+    opt.text.toLowerCase() === value.toLowerCase() ||
+    opt.text.toLowerCase().includes(value.toLowerCase()) ||
+    value.toLowerCase().includes(opt.text.toLowerCase())
   );
 
   if (matchingOption) {
+    element.selectedIndex = matchingOption.index;
     element.value = matchingOption.value;
+    matchingOption.selected = true;
   } else {
-    // If no match, just set the value
     element.value = value;
   }
 
-  // Trigger all select-related events
-  element.dispatchEvent(new Event('input', { bubbles: true }));
-  element.dispatchEvent(new Event('change', { bubbles: true }));
-  element.dispatchEvent(new Event('click', { bubbles: true }));
+  element.dispatchEvent(new Event('focus', { bubbles: true }));
+  
+  element.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+  element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  
+  element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+  
+  element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   element.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
 
-  console.log('Event Simulator: Select change events triggered');
+  console.log('Event Simulator: Select change events triggered for:', matchingOption?.text || value);
 }
 
 /**
@@ -199,12 +199,10 @@ export function setNativeValue(element: HTMLInputElement | HTMLTextAreaElement, 
  * Simulate selecting an option in ARIA listbox (Google Forms dropdowns)
  */
 function simulateListboxSelect(element: HTMLElement, value: string): void {
-  console.log('Event Simulator: Handling ARIA listbox');
+  console.log('Event Simulator: Handling ARIA listbox/combobox');
   
-  // Get stored options
   const options = (element as any)._formbot_options || [];
   
-  // Find matching option
   const normalizedValue = value.toLowerCase().trim();
   const matchingOption = options.find((opt: any) => 
     opt.value.toLowerCase() === normalizedValue ||
@@ -215,12 +213,12 @@ function simulateListboxSelect(element: HTMLElement, value: string): void {
   
   if (!matchingOption) {
     console.log('Event Simulator: No matching option found for:', value);
+    tryDirectTextUpdate(element, value);
     return;
   }
   
   console.log('Event Simulator: Found matching option:', matchingOption.text);
   
-  // Find the option element
   const optionElements = element.querySelectorAll('[role="option"]');
   const targetOption = Array.from(optionElements).find(opt => 
     opt.textContent?.trim() === matchingOption.text ||
@@ -228,32 +226,66 @@ function simulateListboxSelect(element: HTMLElement, value: string): void {
   );
   
   if (!targetOption) {
-    console.log('Event Simulator: Option element not found');
+    console.log('Event Simulator: Option element not found, trying direct update');
+    tryDirectTextUpdate(element, matchingOption.text);
     return;
   }
   
-  // Simulate clicking the dropdown to open it
-  element.click();
-  element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  element.focus();
+  element.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
   
-  // Wait a moment for dropdown to open, then click the option
+  element.click();
+  element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+  
   setTimeout(() => {
-    // Click the option
+    (targetOption as HTMLElement).focus();
     (targetOption as HTMLElement).click();
-    targetOption.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    targetOption.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    targetOption.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    targetOption.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    targetOption.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     
-    // Update aria-selected
     optionElements.forEach(opt => opt.setAttribute('aria-selected', 'false'));
     targetOption.setAttribute('aria-selected', 'true');
     
-    // Trigger events on the listbox
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-    element.dispatchEvent(new Event('input', { bubbles: true }));
+    tryDirectTextUpdate(element, matchingOption.text);
+    
+    element.setAttribute('aria-activedescendant', targetOption.id || '');
+    
+    element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+    element.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: matchingOption.text }));
     element.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
     
-    console.log('Event Simulator: Listbox option selected');
-  }, 100);
+    console.log('Event Simulator: Listbox option selected and UI updated');
+  }, 150);
+}
+
+function tryDirectTextUpdate(element: HTMLElement, text: string): void {
+  const possibleDisplays = [
+    element.querySelector('[class*="selected"]'),
+    element.querySelector('[class*="value"]'),
+    element.querySelector('[class*="display"]'),
+    element.querySelector('[class*="placeholder"]'),
+    element.querySelector('input[type="hidden"]'),
+    element.querySelector('input'),
+    element.querySelector('span'),
+    element.querySelector('div[data-value]'),
+  ];
+  
+  for (const display of possibleDisplays) {
+    if (display) {
+      if (display.tagName === 'INPUT') {
+        (display as HTMLInputElement).value = text;
+        display.dispatchEvent(new Event('input', { bubbles: true }));
+        display.dispatchEvent(new Event('change', { bubbles: true }));
+      } else {
+        display.textContent = text;
+      }
+      console.log('Event Simulator: Updated display element with text:', text);
+      break;
+    }
+  }
 }
 
 /**

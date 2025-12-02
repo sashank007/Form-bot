@@ -58,7 +58,22 @@ module.exports = (env, argv) => {
       new CopyWebpackPlugin({
         patterns: [
           { from: 'manifest.json', to: 'manifest.json' },
-          { from: 'public', to: '.' },
+          { 
+            from: 'public/icons/icon16.png',
+            to: 'icons/icon16.png'
+          },
+          { 
+            from: 'public/icons/icon48.png',
+            to: 'icons/icon48.png'
+          },
+          { 
+            from: 'public/icons/formbot_icon.png',
+            to: 'icons/icon128.png'
+          },
+          { 
+            from: 'public/webhook-receiver.html',
+            to: 'webhook-receiver.html'
+          },
           { from: 'src/content/content.css', to: 'content.css' },
           { 
             from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js', 

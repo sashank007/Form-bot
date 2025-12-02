@@ -1122,14 +1122,27 @@ async function fillFromResume() {
 
     updateLoadingOverlay('Mapping data to form fields...');
 
-    // Use AI to intelligently map profile data to form fields
-    const fieldInfos = fields.map(f => ({
-      label: f.label,
-      name: f.name,
-      type: f.type,
-      placeholder: f.placeholder,
-      ariaLabel: f.ariaLabel,
-    }));
+    const fieldInfos = fields.map(f => {
+      const fieldInfo: any = {
+        label: f.label,
+        name: f.name,
+        type: f.type,
+        placeholder: f.placeholder,
+        ariaLabel: f.ariaLabel,
+      };
+
+      if (f.element.tagName === 'SELECT') {
+        const selectEl = f.element as HTMLSelectElement;
+        fieldInfo.options = Array.from(selectEl.options).map(opt => ({
+          value: opt.value,
+          text: opt.text,
+        }));
+      } else if (f.element.getAttribute('role') === 'listbox') {
+        fieldInfo.options = (f.element as any)._formbot_options || [];
+      }
+
+      return fieldInfo;
+    });
 
     const fillMappings = await fillFormFromProfile(fieldInfos, extractedData);
 
@@ -1148,30 +1161,14 @@ async function fillFromResume() {
 
       const element = field.element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement;
       
-      // Save previous value
       const currentValue = ('value' in element) ? (element as HTMLInputElement).value : element.textContent || '';
       previousValues.push({
         xpath: field.xpath,
         value: currentValue,
       });
 
-      // Fill the field
-      if ('value' in element) {
-        (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value = fillValue;
-      } else if ((element as HTMLElement).isContentEditable) {
-        (element as HTMLElement).textContent = fillValue;
-      }
+      fillFieldWithEvents(element, fillValue);
 
-      // Trigger events
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-      
-      if ((element as HTMLElement).isContentEditable) {
-        element.dispatchEvent(new Event('keyup', { bubbles: true }));
-        element.dispatchEvent(new Event('blur', { bubbles: true }));
-      }
-
-      // Highlight
       element.classList.add('formbot-highlight-success');
       setTimeout(() => {
         element.classList.remove('formbot-highlight-success');

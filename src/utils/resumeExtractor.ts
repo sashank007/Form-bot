@@ -118,7 +118,14 @@ export async function extractFromLinkedIn(linkedInUrl: string): Promise<Extracte
  * Intelligent form filling using extracted profile data
  */
 export async function fillFormFromProfile(
-  fields: Array<{ label: string; name: string; type: string; placeholder: string; ariaLabel: string }>,
+  fields: Array<{ 
+    label: string; 
+    name: string; 
+    type: string; 
+    placeholder: string; 
+    ariaLabel: string; 
+    options?: Array<{ value: string; text: string }> 
+  }>,
   profileData: ExtractedProfileData
 ): Promise<Map<number, string>> {
   const settings = await getSettings();
@@ -143,10 +150,22 @@ Rules:
 - If multiple profile fields could work, choose the most relevant
 - If no data exists, return null
 
+DROPDOWNS/SELECT FIELDS:
+- For dropdown/select fields, you will see an "options" array with available choices
+- You MUST return one of the available option values or texts from the options array
+- Match semantically - e.g., if profile has "United States" and options include ["US", "USA", "United States"], choose the matching one
+- If no good match exists in options, return null
+
 Return ONLY valid JSON.`;
 
     const userPrompt = `Form fields to fill:
-${fields.map((f, i) => `${i}. Label: "${f.label}" | Name: "${f.name}" | Type: "${f.type}" | Placeholder: "${f.placeholder}" | Aria: "${f.ariaLabel}"`).join('\n')}
+${fields.map((f, i) => {
+  let fieldDesc = `${i}. Label: "${f.label}" | Name: "${f.name}" | Type: "${f.type}" | Placeholder: "${f.placeholder}" | Aria: "${f.ariaLabel}"`;
+  if (f.options && f.options.length > 0) {
+    fieldDesc += ` | Options: [${f.options.map(o => `"${o.text}"`).join(', ')}]`;
+  }
+  return fieldDesc;
+}).join('\n')}
 
 Available profile data:
 ${JSON.stringify(profileData, null, 2)}
@@ -156,6 +175,7 @@ For EACH field, determine the best fill value from the profile. Match intelligen
 - "Tell us about yourself" → use summary or experience
 - "Skills" → use skills field
 - "Why this company?" → craft from experience/summary
+- For dropdowns/select fields with options, choose the best matching option from the available choices
 - etc.
 
 Return JSON:
@@ -221,7 +241,12 @@ Be thorough - try to fill every field!`;
  * Simple profile matching (fallback when AI not available)
  */
 function simpleProfileMatch(
-  fields: Array<{ label: string; name: string; type: string }>,
+  fields: Array<{ 
+    label: string; 
+    name: string; 
+    type: string; 
+    options?: Array<{ value: string; text: string }> 
+  }>,
   profileData: ExtractedProfileData
 ): Map<number, string> {
   const resultMap = new Map<number, string>();
@@ -229,10 +254,24 @@ function simpleProfileMatch(
   fields.forEach((field, index) => {
     const normalizedLabel = field.label.toLowerCase().replace(/[^a-z0-9]/g, '');
     
-    // Try to match against profile data keys
     for (const [key, value] of Object.entries(profileData)) {
-      if (value && normalizedLabel.includes(key.toLowerCase())) {
-        resultMap.set(index, value);
+      if (!value) continue;
+      
+      if (normalizedLabel.includes(key.toLowerCase())) {
+        if (field.options && field.options.length > 0) {
+          const normalizedValue = value.toLowerCase().trim();
+          const matchingOption = field.options.find(opt =>
+            opt.text.toLowerCase().trim() === normalizedValue ||
+            opt.value.toLowerCase().trim() === normalizedValue ||
+            opt.text.toLowerCase().includes(normalizedValue) ||
+            normalizedValue.includes(opt.text.toLowerCase())
+          );
+          if (matchingOption) {
+            resultMap.set(index, matchingOption.text);
+          }
+        } else {
+          resultMap.set(index, value);
+        }
         break;
       }
     }
