@@ -130,49 +130,171 @@ function isDayField(label: string, name: string, id: string): boolean {
 export function parseDate(dateValue: string): ParsedDate | null {
   if (!dateValue) return null;
 
+  const trimmed = dateValue.trim();
   let date: Date | null = null;
 
-  const formats = [
-    /^(\d{4})-(\d{2})-(\d{2})$/, // YYYY-MM-DD
-    /^(\d{2})\/(\d{2})\/(\d{4})$/, // MM/DD/YYYY
-    /^(\d{2})\/(\d{2})\/(\d{2})$/, // MM/DD/YY
-    /^(\d{4})\/(\d{2})\/(\d{2})$/, // YYYY/MM/DD
-    /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, // M/D/YYYY
-  ];
+  // Month name mappings
+  const monthNames: Record<string, number> = {
+    'january': 0, 'jan': 0, 'enero': 0, 'janvier': 0, 'januar': 0,
+    'february': 1, 'feb': 1, 'febrero': 1, 'février': 1, 'februar': 1,
+    'march': 2, 'mar': 2, 'marzo': 2, 'mars': 2, 'märz': 2,
+    'april': 3, 'apr': 3, 'abril': 3, 'avril': 3,
+    'may': 4, 'mayo': 4, 'mai': 4,
+    'june': 5, 'jun': 5, 'junio': 5, 'juin': 5, 'juni': 5,
+    'july': 6, 'jul': 6, 'julio': 6, 'juillet': 6, 'juli': 6,
+    'august': 7, 'aug': 7, 'agosto': 7, 'août': 7,
+    'september': 8, 'sep': 8, 'sept': 8, 'septiembre': 8, 'septembre': 8,
+    'october': 9, 'oct': 9, 'octubre': 9, 'octobre': 9, 'oktober': 9,
+    'november': 10, 'nov': 10, 'noviembre': 10, 'novembre': 10,
+    'december': 11, 'dec': 11, 'diciembre': 11, 'décembre': 11, 'dezember': 11,
+  };
 
-  for (const format of formats) {
-    const match = dateValue.match(format);
-    if (match) {
-      if (format === formats[0]) {
-        date = new Date(parseInt(match[1]), parseInt(match[2]) - 1, parseInt(match[3]));
-      } else if (format === formats[1] || format === formats[4]) {
-        date = new Date(parseInt(match[3]), parseInt(match[1]) - 1, parseInt(match[2]));
-      } else if (format === formats[2]) {
-        const year = parseInt(match[3]) < 50 ? 2000 + parseInt(match[3]) : 1900 + parseInt(match[3]);
-        date = new Date(year, parseInt(match[1]) - 1, parseInt(match[2]));
-      } else if (format === formats[3]) {
-        date = new Date(parseInt(match[1]), parseInt(match[2]) - 1, parseInt(match[3]));
-      }
-      break;
+  const parseMonthName = (str: string): number | null => {
+    const lower = str.toLowerCase().replace(/[.,]/g, '');
+    return monthNames[lower] ?? null;
+  };
+
+  const parseYear = (y: string): number => {
+    const num = parseInt(y);
+    if (y.length === 2) return num < 50 ? 2000 + num : 1900 + num;
+    return num;
+  };
+
+  // ISO 8601: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS
+  const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:T|$|\s)/);
+  if (iso) {
+    date = new Date(parseInt(iso[1]), parseInt(iso[2]) - 1, parseInt(iso[3]));
+  }
+
+  // YYYY/MM/DD or YYYY.MM.DD
+  if (!date) {
+    const ymd = trimmed.match(/^(\d{4})[\/\.](\d{1,2})[\/\.](\d{1,2})$/);
+    if (ymd) {
+      date = new Date(parseInt(ymd[1]), parseInt(ymd[2]) - 1, parseInt(ymd[3]));
     }
   }
 
+  // "Month DD, YYYY" or "Month DD YYYY" (e.g., "February 17, 2025")
+  if (!date) {
+    const monthFirst = trimmed.match(/^([a-zA-Zéûäöü]+)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(\d{2,4})$/i);
+    if (monthFirst) {
+      const month = parseMonthName(monthFirst[1]);
+      if (month !== null) {
+        date = new Date(parseYear(monthFirst[3]), month, parseInt(monthFirst[2]));
+      }
+    }
+  }
+
+  // "DD Month YYYY" or "DD-Month-YYYY" (e.g., "17 February 2025", "17-Feb-2025")
+  if (!date) {
+    const dayFirst = trimmed.match(/^(\d{1,2})(?:st|nd|rd|th)?[\s\-]([a-zA-Zéûäöü]+)[\s\-,](\d{2,4})$/i);
+    if (dayFirst) {
+      const month = parseMonthName(dayFirst[2]);
+      if (month !== null) {
+        date = new Date(parseYear(dayFirst[3]), month, parseInt(dayFirst[1]));
+      }
+    }
+  }
+
+  // "YYYY Month DD" (e.g., "2025 February 17")
+  if (!date) {
+    const yearFirst = trimmed.match(/^(\d{4})[\s\-]([a-zA-Zéûäöü]+)[\s\-](\d{1,2})$/i);
+    if (yearFirst) {
+      const month = parseMonthName(yearFirst[2]);
+      if (month !== null) {
+        date = new Date(parseInt(yearFirst[1]), month, parseInt(yearFirst[3]));
+      }
+    }
+  }
+
+  // Numeric formats with separators: handle DD/MM/YYYY vs MM/DD/YYYY intelligently
+  if (!date) {
+    const numeric = trimmed.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+    if (numeric) {
+      const first = parseInt(numeric[1]);
+      const second = parseInt(numeric[2]);
+      const year = parseYear(numeric[3]);
+
+      // Unambiguous cases
+      if (first > 12 && second <= 12) {
+        // First must be day (DD/MM/YYYY)
+        date = new Date(year, second - 1, first);
+      } else if (second > 12 && first <= 12) {
+        // Second must be day (MM/DD/YYYY)
+        date = new Date(year, first - 1, second);
+      } else if (first > 31) {
+        // Invalid day, might be YYYY at start? Skip
+      } else if (second > 31) {
+        // Invalid day
+      } else {
+        // Ambiguous: both <= 12 - prefer DD/MM/YYYY (more common globally)
+        // But validate: if first <= 12 and seems like a valid month, use it
+        date = new Date(year, second - 1, first); // DD/MM/YYYY
+        if (isNaN(date.getTime())) {
+          date = new Date(year, first - 1, second); // Try MM/DD/YYYY
+        }
+      }
+    }
+  }
+
+  // YYYYMMDD (compact)
+  if (!date) {
+    const compact = trimmed.match(/^(\d{4})(\d{2})(\d{2})$/);
+    if (compact) {
+      date = new Date(parseInt(compact[1]), parseInt(compact[2]) - 1, parseInt(compact[3]));
+    }
+  }
+
+  // DDMMYYYY (compact, European)
+  if (!date) {
+    const compactEU = trimmed.match(/^(\d{2})(\d{2})(\d{4})$/);
+    if (compactEU) {
+      const day = parseInt(compactEU[1]);
+      const month = parseInt(compactEU[2]);
+      if (day <= 31 && month <= 12) {
+        date = new Date(parseInt(compactEU[3]), month - 1, day);
+      }
+    }
+  }
+
+  // Unix timestamp (milliseconds)
+  if (!date) {
+    const timestamp = trimmed.match(/^(\d{13})$/);
+    if (timestamp) {
+      date = new Date(parseInt(timestamp[1]));
+    }
+  }
+
+  // Unix timestamp (seconds)
+  if (!date) {
+    const timestampSec = trimmed.match(/^(\d{10})$/);
+    if (timestampSec) {
+      date = new Date(parseInt(timestampSec[1]) * 1000);
+    }
+  }
+
+  // Fallback: let JavaScript try to parse it
   if (!date || isNaN(date.getTime())) {
-    date = new Date(dateValue);
+    date = new Date(trimmed);
     if (isNaN(date.getTime())) {
       return null;
     }
+  }
+
+  // Validate the date is reasonable (year between 1900-2100)
+  if (date.getFullYear() < 1900 || date.getFullYear() > 2100) {
+    return null;
   }
 
   const year = date.getFullYear().toString();
   const monthNumber = (date.getMonth() + 1).toString().padStart(2, '0');
   const day = date.getDate().toString().padStart(2, '0');
 
-  const monthNames = [
+  const monthNamesList = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'
   ];
-  const month = monthNames[date.getMonth()];
+  const month = monthNamesList[date.getMonth()];
 
   return {
     year,

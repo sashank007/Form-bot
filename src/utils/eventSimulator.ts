@@ -48,35 +48,40 @@ function formatDateForInput(value: string): string {
   // Already in YYYY-MM-DD format
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   
-  // Try parsing common date formats
-  const formats = [
-    /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/,  // MM/DD/YYYY or DD/MM/YYYY
-    /^(\d{1,2})-(\d{1,2})-(\d{4})$/,     // MM-DD-YYYY or DD-MM-YYYY
-    /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/,   // YYYY/MM/DD
-    /^(\d{4})\.(\d{1,2})\.(\d{1,2})$/,   // YYYY.MM.DD
-  ];
-  
-  for (const regex of formats) {
-    const match = value.match(regex);
-    if (match) {
-      let year: string, month: string, day: string;
-      
-      if (match[1].length === 4) {
-        // YYYY/MM/DD or YYYY.MM.DD format
-        year = match[1];
-        month = match[2].padStart(2, '0');
-        day = match[3].padStart(2, '0');
-      } else if (match[3].length === 4) {
-        // Assume MM/DD/YYYY (US format) - most common
-        year = match[3];
-        month = match[1].padStart(2, '0');
-        day = match[2].padStart(2, '0');
-      } else {
-        continue;
-      }
-      
-      return `${year}-${month}-${day}`;
+  // Handle formats like DD/MM/YYYY or MM/DD/YYYY
+  const slashOrDash = value.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (slashOrDash) {
+    const first = parseInt(slashOrDash[1]);
+    const second = parseInt(slashOrDash[2]);
+    const year = slashOrDash[3];
+    
+    let month: number, day: number;
+    
+    // Intelligently detect DD/MM vs MM/DD
+    if (first > 12 && second <= 12) {
+      // First is definitely day (DD/MM/YYYY)
+      day = first;
+      month = second;
+    } else if (second > 12 && first <= 12) {
+      // Second is definitely day (MM/DD/YYYY)
+      month = first;
+      day = second;
+    } else {
+      // Ambiguous - prefer DD/MM/YYYY (more common globally)
+      day = first;
+      month = second;
     }
+    
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+  
+  // Handle YYYY/MM/DD or YYYY.MM.DD
+  const yearFirst = value.match(/^(\d{4})[\/\.](\d{1,2})[\/\.](\d{1,2})$/);
+  if (yearFirst) {
+    const year = yearFirst[1];
+    const month = yearFirst[2].padStart(2, '0');
+    const day = yearFirst[3].padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
   
   // Try parsing with Date object as fallback

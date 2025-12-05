@@ -9,6 +9,7 @@ import { FormDetectionResult, Settings, SavedFormData } from '../types';
 import { getSettings, getAllFormData, getFormDataById, saveSelectedProfile, getSelectedProfile } from '../utils/storage';
 import { findMatchingTemplates } from '../utils/templateStorage';
 import { validateFormData } from '../utils/validator';
+import { getAuth, UserAuth } from '../utils/googleAuth';
 
 const Popup: React.FC = () => {
   const [formData, setFormData] = useState<FormDetectionResult | null>(null);
@@ -25,9 +26,23 @@ const Popup: React.FC = () => {
   const [filledFormName, setFilledFormName] = useState('');
   const [validationIssues, setValidationIssues] = useState<any[]>([]);
   const [securityWarnings, setSecurityWarnings] = useState<any[]>([]);
+  const [initialProfileSet, setInitialProfileSet] = useState(false);
+  const [lastRematchedProfile, setLastRematchedProfile] = useState<string>('');
+  const [userAuth, setUserAuth] = useState<UserAuth | null>(null);
 
   useEffect(() => {
     loadData();
+    
+    // Listen for storage changes to auto-refresh when profiles are deleted/updated
+    const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }) => {
+      if (changes.formbot_data) {
+        console.log('📥 Profiles changed, refreshing popup...');
+        loadProfiles();
+      }
+    };
+    
+    chrome.storage.onChanged.addListener(handleStorageChange);
+    return () => chrome.storage.onChanged.removeListener(handleStorageChange);
   }, []);
 
   useEffect(() => {
@@ -51,14 +66,30 @@ const Popup: React.FC = () => {
     return () => clearInterval(pollInterval);
   }, [isMatching]);
 
-  // Re-match fields when profile changes
+  // Re-match fields only when user manually changes profile (not on initial load)
   useEffect(() => {
-    if (selectedProfileId && formData) {
-      setIsMatching(true);
-      rematchFields();
+    if (!selectedProfileId || !formData) return;
+    
+    // Skip rematch if this is the initial profile selection or same profile
+    if (!initialProfileSet) {
+      setInitialProfileSet(true);
+      setLastRematchedProfile(selectedProfileId);
       saveSelectedProfile(selectedProfileId);
       validateProfileData(selectedProfileId);
+      return;
     }
+    
+    // Skip if we already rematched with this profile
+    if (selectedProfileId === lastRematchedProfile) {
+      return;
+    }
+    
+    // User changed profile - do rematch
+    setIsMatching(true);
+    setLastRematchedProfile(selectedProfileId);
+    rematchFields();
+    saveSelectedProfile(selectedProfileId);
+    validateProfileData(selectedProfileId);
   }, [selectedProfileId]);
 
   useEffect(() => {
@@ -69,9 +100,23 @@ const Popup: React.FC = () => {
     }
   }, [darkMode]);
 
+  const loadProfiles = async () => {
+    const profiles = await getAllFormData();
+    setSavedProfiles(profiles);
+    
+    // If selected profile was deleted, select another
+    if (selectedProfileId && !profiles.find(p => p.id === selectedProfileId)) {
+      if (profiles.length > 0) {
+        const sorted = profiles.sort((a, b) => b.updatedAt - a.updatedAt);
+        setSelectedProfileId(sorted[0].id);
+      } else {
+        setSelectedProfileId('');
+      }
+    }
+  };
+
   const loadData = async () => {
     try {
-      // Get current tab
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       
       if (!tab.id) {
@@ -79,50 +124,38 @@ const Popup: React.FC = () => {
         return;
       }
 
-      // Get form data from content script
       const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_FORM_DATA' });
       setFormData(response);
       setIsMatching(response?.isMatching || false);
 
-      // Load settings
       const loadedSettings = await getSettings();
       setSettings(loadedSettings);
       setDarkMode(loadedSettings.darkMode);
+      
+      // Load Google user auth
+      const auth = await getAuth();
+      setUserAuth(auth);
 
-      // Load saved profiles
       const profiles = await getAllFormData();
       setSavedProfiles(profiles);
       
-      // Restore last selected profile or use most recent
-      let profileIdToUse = '';
-      if (profiles.length > 0 && !selectedProfileId) {
-        const lastSelected = await getSelectedProfile();
-        
-        // Check if last selected profile still exists
-        const profileExists = lastSelected && profiles.find(p => p.id === lastSelected);
-        
-        if (profileExists) {
-          profileIdToUse = lastSelected;
-          setSelectedProfileId(lastSelected);
-        } else {
-          // Fall back to most recent
-          const sorted = profiles.sort((a, b) => b.updatedAt - a.updatedAt);
-          profileIdToUse = sorted[0].id;
-          setSelectedProfileId(sorted[0].id);
-        }
+      // ALWAYS use unified_profile - single profile per Google account
+      const unifiedProfile = profiles.find(p => p.id === 'unified_profile');
+      if (unifiedProfile) {
+        setSelectedProfileId('unified_profile');
+        setTimeout(() => validateProfileData('unified_profile'), 200);
+      } else if (profiles.length > 0) {
+        // Fallback to first profile if no unified yet
+        const sorted = profiles.sort((a, b) => b.updatedAt - a.updatedAt);
+        setSelectedProfileId(sorted[0].id);
+        setTimeout(() => validateProfileData(sorted[0].id), 200);
       }
       
       // Check for matching templates
       if (response.fields && response.fields.length > 0) {
         const fieldStructure = response.fields.map((f: any) => f.field.label || f.field.name || '').filter((s: string) => s);
         const matches = await findMatchingTemplates(window.location.href, fieldStructure);
-        setMatchingTemplates(matches.slice(0, 3)); // Top 3 matches
-      }
-      
-      // Validate profile data for this form (after profile is selected)
-      if (profileIdToUse) {
-        // Small delay to ensure formData state is updated
-        setTimeout(() => validateProfileData(profileIdToUse), 200);
+        setMatchingTemplates(matches.slice(0, 3));
       }
     } catch (error) {
       console.error('Failed to load data:', error);
@@ -145,8 +178,16 @@ const Popup: React.FC = () => {
       },
     });
 
-    // Reload data to show updated form
-    setTimeout(loadData, 500);
+    // Refresh form data without triggering rematch (just get current state)
+    setTimeout(async () => {
+      try {
+        const response = await chrome.tabs.sendMessage(tab.id!, { type: 'GET_FORM_DATA' });
+        setFormData(response);
+        setIsMatching(response?.isMatching || false);
+      } catch (error) {
+        console.error('Failed to refresh form data:', error);
+      }
+    }, 500);
   };
 
   const handleUndo = async () => {
@@ -378,28 +419,47 @@ const Popup: React.FC = () => {
           </button>
         </div>
 
-        {/* Profile Selector - Prominent */}
-        {savedProfiles.length > 0 && (
-          <div className="bg-white/10 backdrop-blur rounded-lg p-3 border border-white/20">
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-medium text-white/80">Active Profile:</label>
-              <span className="text-xs text-white/60">{savedProfiles.length} total</span>
+        {/* Single Profile - Google Account Linked */}
+        {(() => {
+          const currentProfile = savedProfiles.find(p => p.id === 'unified_profile') || savedProfiles[0];
+          const fieldCount = currentProfile ? Object.keys(currentProfile.data || {}).length : 0;
+          
+          return (
+            <div className="bg-white/10 backdrop-blur rounded-lg p-3 border border-white/20">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {userAuth?.picture ? (
+                    <img 
+                      src={userAuth.picture} 
+                      alt="" 
+                      className="w-9 h-9 rounded-full border-2 border-white/30"
+                    />
+                  ) : (
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center border-2 border-white/30">
+                      <span className="text-white text-sm font-bold">
+                        {userAuth?.name?.[0] || '?'}
+                      </span>
+                    </div>
+                  )}
+                  <div>
+                    <p className="text-sm font-medium text-white">
+                      {userAuth?.name || 'My Profile'}
+                    </p>
+                    <p className="text-xs text-white/70">
+                      {fieldCount > 0 ? `${fieldCount} fields saved` : 'No data yet'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={openOptions}
+                  className="px-3 py-1.5 text-xs bg-white/20 hover:bg-white/30 rounded-lg text-white transition-colors font-medium"
+                >
+                  Edit
+                </button>
+              </div>
             </div>
-            <select
-              value={selectedProfileId}
-              onChange={(e) => setSelectedProfileId(e.target.value)}
-              className="w-full px-3 py-2 bg-white/95 border border-white/30 rounded-lg text-sm text-gray-900 font-medium focus:ring-2 focus:ring-white focus:border-white focus:outline-none"
-            >
-              {savedProfiles
-                .sort((a, b) => b.updatedAt - a.updatedAt)
-                .map(profile => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name} • {Object.keys(profile.data).length} fields
-                  </option>
-                ))}
-            </select>
-          </div>
-        )}
+          );
+        })()}
 
         {hasFields && (
           <p className="text-sm mt-3 text-white/90">
@@ -418,12 +478,49 @@ const Popup: React.FC = () => {
       {/* Content */}
       <div className="p-4">
         {!hasFields ? (
-          <div className="text-center py-8">
-            <svg className="w-16 h-16 mx-auto text-gray-400 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            <p className="mt-4 text-gray-600 dark:text-gray-400">No forms detected on this page</p>
-            <p className="mt-2 text-sm text-gray-500 dark:text-gray-500">Navigate to a page with a form to get started</p>
+          <div className="text-center py-6">
+            {/* Fun illustration */}
+            <div className="relative w-24 h-24 mx-auto mb-4">
+              {/* Background circle */}
+              <div className="absolute inset-0 bg-gradient-to-br from-purple-100 to-indigo-100 dark:from-purple-900/30 dark:to-indigo-900/30 rounded-full"></div>
+              {/* Animated emoji */}
+              <div className="absolute inset-0 flex items-center justify-center text-5xl animate-bounce" style={{ animationDuration: '2s' }}>
+                🔍
+              </div>
+              {/* Sparkles */}
+              <div className="absolute -top-1 -right-1 text-lg animate-pulse">✨</div>
+              <div className="absolute -bottom-1 -left-1 text-sm animate-pulse" style={{ animationDelay: '0.5s' }}>✨</div>
+            </div>
+            
+            {/* Witty headline */}
+            <h3 className="text-lg font-bold text-gray-800 dark:text-gray-200">
+              No forms here!
+            </h3>
+            
+            {/* Helpful subtext */}
+            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400 max-w-[200px] mx-auto">
+              Try visiting a signup, checkout, or application page
+            </p>
+            
+            {/* Suggestions */}
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              {['Sign up', 'Checkout', 'Apply'].map((suggestion, i) => (
+                <span 
+                  key={i}
+                  className="px-3 py-1 text-xs font-medium bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-300 rounded-full"
+                >
+                  {suggestion}
+                </span>
+              ))}
+            </div>
+            
+            {/* Tip */}
+            <div className="mt-5 p-3 bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/20 rounded-lg border border-amber-200 dark:border-amber-800/50">
+              <p className="text-xs text-amber-800 dark:text-amber-200 flex items-center justify-center gap-2">
+                <span>💡</span>
+                <span>FormBot works best on forms with input fields</span>
+              </p>
+            </div>
           </div>
         ) : (
           <>

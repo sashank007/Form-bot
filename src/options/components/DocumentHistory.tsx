@@ -1,8 +1,27 @@
 import React, { useEffect, useState } from 'react';
 import { SubmittedDocument } from '../../types';
-import { getSubmittedDocuments, deleteSubmittedDocument } from '../../utils/documentStorage';
+import { getSubmittedDocuments, deleteSubmittedDocument, updateDocumentLabel } from '../../utils/documentStorage';
 import { getS3PresignedUrl } from '../../utils/s3Upload';
 import { getAuth } from '../../utils/googleAuth';
+
+const DOCUMENT_TYPE_OPTIONS = [
+  { value: 'drivers_license', label: "Driver's License" },
+  { value: 'passport', label: 'Passport' },
+  { value: 'id_card', label: 'ID Card' },
+  { value: 'insurance', label: 'Insurance Card' },
+  { value: 'resume', label: 'Resume / CV' },
+  { value: 'photo', label: 'Photo / Headshot' },
+  { value: 'certificate', label: 'Certificate' },
+  { value: 'transcript', label: 'Transcript' },
+  { value: 'birth_certificate', label: 'Birth Certificate' },
+  { value: 'ssn', label: 'Social Security Card' },
+  { value: 'tax', label: 'Tax Document' },
+  { value: 'bank', label: 'Bank Statement' },
+  { value: 'utility', label: 'Utility Bill' },
+  { value: 'lease', label: 'Lease Agreement' },
+  { value: 'employment', label: 'Employment Letter' },
+  { value: 'other', label: 'Other' },
+];
 
 const DocumentHistory: React.FC = () => {
   const [documents, setDocuments] = useState<SubmittedDocument[]>([]);
@@ -13,6 +32,8 @@ const DocumentHistory: React.FC = () => {
   const [previewDoc, setPreviewDoc] = useState<SubmittedDocument | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState<string>('');
 
   useEffect(() => {
     loadDocuments();
@@ -149,16 +170,31 @@ const DocumentHistory: React.FC = () => {
   };
 
   const getDocumentTypeLabel = (type: string) => {
+    const found = DOCUMENT_TYPE_OPTIONS.find(opt => opt.value === type);
+    if (found) return found.label;
     const labels: { [key: string]: string } = {
-      drivers_license: "Driver's License",
-      passport: 'Passport',
-      id_card: 'ID Card',
-      insurance: 'Insurance Card',
       pdf: 'PDF Document',
       image: 'Image',
-      other: 'Other',
     };
     return labels[type] || type;
+  };
+
+  const startEditing = (doc: SubmittedDocument) => {
+    setEditingId(doc.id);
+    setEditLabel(doc.customLabel || doc.documentType);
+  };
+
+  const saveLabel = async (docId: string) => {
+    if (!editLabel.trim()) return;
+    await updateDocumentLabel(docId, editLabel.trim());
+    await loadDocuments();
+    setEditingId(null);
+    setEditLabel('');
+  };
+
+  const cancelEditing = () => {
+    setEditingId(null);
+    setEditLabel('');
   };
 
   return (
@@ -298,9 +334,43 @@ const DocumentHistory: React.FC = () => {
                       <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                         {doc.fileName}
                       </h3>
-                      <span className="px-2 py-1 text-xs font-medium rounded bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200">
-                        {getDocumentTypeLabel(doc.documentType)}
-                      </span>
+                      {editingId === doc.id ? (
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={DOCUMENT_TYPE_OPTIONS.find(o => o.label === editLabel || o.value === editLabel)?.value || 'other'}
+                            onChange={(e) => {
+                              const opt = DOCUMENT_TYPE_OPTIONS.find(o => o.value === e.target.value);
+                              setEditLabel(opt?.label || e.target.value);
+                            }}
+                            className="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                          >
+                            {DOCUMENT_TYPE_OPTIONS.map(opt => (
+                              <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            ))}
+                          </select>
+                          <button onClick={() => saveLabel(doc.id)} className="text-green-600 hover:text-green-800">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                          </button>
+                          <button onClick={cancelEditing} className="text-red-600 hover:text-red-800">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => startEditing(doc)}
+                          className="px-2 py-1 text-xs font-medium rounded bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-200 hover:bg-purple-200 dark:hover:bg-purple-800/40 transition-colors flex items-center gap-1"
+                          title="Click to change document type for auto-fill matching"
+                        >
+                          {doc.customLabel || getDocumentTypeLabel(doc.documentType)}
+                          <svg className="w-3 h-3 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                          </svg>
+                        </button>
+                      )}
                     </div>
                     
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-gray-600 dark:text-gray-400 mt-4">

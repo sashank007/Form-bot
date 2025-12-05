@@ -681,6 +681,15 @@ async function fillSingleField(detectedField: DetectedField, button: HTMLButtonE
         }
       }
       
+      // Fill full date input if this is the fullDateField
+      if (dateGroup.fullDateField === detectedField.field) {
+        const formattedDate = `${parsed.year}-${parsed.monthNumber}-${parsed.day}`;
+        console.log(`📅 [DATE] Filling date input with: ${formattedDate}`);
+        performFill(element, formattedDate);
+        filledAny = true;
+        console.log('✅ [DATE] Filled date input');
+      }
+      
       // Also fill other components in the group if they exist and aren't filled yet
       if (dateGroup.yearField && dateGroup.yearField !== detectedField.field) {
         fillDateComponent(dateGroup.yearField, parsed.year, 'year');
@@ -691,6 +700,11 @@ async function fillSingleField(detectedField: DetectedField, button: HTMLButtonE
       }
       if (dateGroup.dayField && dateGroup.dayField !== detectedField.field) {
         fillDateComponent(dateGroup.dayField, parsed.day, 'day');
+      }
+      if (dateGroup.fullDateField && dateGroup.fullDateField !== detectedField.field) {
+        const dateEl = dateGroup.fullDateField.element as HTMLInputElement;
+        const formattedDate = `${parsed.year}-${parsed.monthNumber}-${parsed.day}`;
+        performFill(dateEl, formattedDate);
       }
       
       if (filledAny) {

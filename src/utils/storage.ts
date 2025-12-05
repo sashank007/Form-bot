@@ -5,7 +5,7 @@
  */
 
 import { SavedFormData, FormData, Settings } from '../types';
-import { pushProfileToDynamoDB, getAllProfilesFromCloud } from './dynamodbSync';
+import { pushProfileToDynamoDB, getAllProfilesFromCloud, deleteProfileFromCloud } from './dynamodbSync';
 import { getAuth } from './googleAuth';
 import { invalidateCacheForKey } from './matchingCache';
 import { invalidateBatchCache } from './batchAIMatcher';
@@ -203,6 +203,9 @@ export async function deleteFormData(id: string): Promise<void> {
       await invalidateCacheForKey(key);
     }
   }
+  
+  // Delete from cloud if signed in
+  deleteProfileFromCloud(id).catch(() => {});
   
   // Trigger profile change callbacks (debounced)
   triggerProfileChangeCallbacks();

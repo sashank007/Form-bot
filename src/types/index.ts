@@ -22,6 +22,8 @@ export interface DetectedField {
   fieldType: FieldType;
   confidence: number;
   matchedKey?: string;
+  reasoning?: string;  // AI explanation for why this field was matched
+  matchFactors?: string[];  // Factors that contributed to the match (e.g., "field name", "input type")
   possibleMatches?: Array<{ key: string; confidence: number; reasoning?: string }>;
 }
 
@@ -210,6 +212,7 @@ export interface SubmittedDocument {
   fileType: string;
   fileSize: number;
   documentType: string;
+  customLabel?: string;
   formUrl: string;
   formFieldName: string;
   formFieldLabel: string;

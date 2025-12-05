@@ -38,34 +38,46 @@ export async function findMatchingDocument(fieldLabel: string): Promise<Submitte
   if (allDocs.length === 0) return null;
   
   const lowerLabel = fieldLabel.toLowerCase();
+  const fieldWords = lowerLabel.split(/\s+/).filter(w => w.length > 2);
   
-  // Try exact document type match first
-  const matchedType = matchDocumentTypeFromLabel(lowerLabel);
-  if (matchedType) {
-    const typeMatch = allDocs.find(d => d.documentType === matchedType);
-    if (typeMatch) return typeMatch;
-  }
-  
-  // Try matching by document label (for custom labels)
-  for (const doc of allDocs) {
-    const docLabel = doc.documentType.toLowerCase();
-    if (lowerLabel.includes(docLabel) || docLabel.includes(lowerLabel.split(' ')[0])) {
-      return doc;
-    }
-  }
-  
-  // Try keyword matching against document labels
-  for (const doc of allDocs) {
-    const docLabelLower = (doc.formFieldLabel || doc.documentType).toLowerCase();
-    const labelWords = lowerLabel.split(/\s+/);
-    for (const word of labelWords) {
-      if (word.length > 3 && docLabelLower.includes(word)) {
-        return doc;
+  // Score all documents and return the best match
+  const scored = allDocs.map(doc => {
+    let score = 0;
+    const customLabel = (doc.customLabel || '').toLowerCase();
+    const docType = doc.documentType.toLowerCase();
+    
+    // Priority 1: Custom label exact match (highest priority)
+    if (customLabel && lowerLabel.includes(customLabel)) score += 200;
+    if (customLabel && customLabel.includes(lowerLabel)) score += 150;
+    
+    // Priority 2: Custom label word overlap
+    if (customLabel) {
+      const customWords = customLabel.split(/\s+/);
+      for (const word of fieldWords) {
+        if (customWords.some(cw => cw.includes(word) || word.includes(cw))) {
+          score += 50;
+        }
       }
     }
-  }
+    
+    // Priority 3: Document type keyword match
+    const matchedType = matchDocumentTypeFromLabel(lowerLabel);
+    if (matchedType && doc.documentType === matchedType) score += 100;
+    
+    // Priority 4: Document type word overlap
+    for (const word of fieldWords) {
+      if (docType.includes(word)) score += 30;
+    }
+    
+    // Priority 5: Form field label match (where doc was originally uploaded)
+    const origLabel = (doc.formFieldLabel || '').toLowerCase();
+    if (origLabel && lowerLabel.includes(origLabel)) score += 40;
+    
+    return { doc, score };
+  });
   
-  return null;
+  const best = scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score)[0];
+  return best?.doc || null;
 }
 
 export async function fillFileUploadField(
@@ -106,28 +118,36 @@ export async function fillFileUploadField(
 export async function getSuggestedDocuments(fieldLabel: string): Promise<SubmittedDocument[]> {
   const allDocs = await getSubmittedDocuments();
   const lowerLabel = fieldLabel.toLowerCase();
+  const fieldWords = lowerLabel.split(/\s+/).filter(w => w.length > 2);
   
-  // Score documents by relevance
   const scored = allDocs.map(doc => {
     let score = 0;
+    const customLabel = (doc.customLabel || '').toLowerCase();
     const docType = doc.documentType.toLowerCase();
-    const docLabel = (doc.formFieldLabel || '').toLowerCase();
+    const origLabel = (doc.formFieldLabel || '').toLowerCase();
     
-    // Exact type match
+    // Custom label matches (highest priority)
+    if (customLabel) {
+      if (lowerLabel.includes(customLabel)) score += 200;
+      if (customLabel.includes(lowerLabel)) score += 150;
+      const customWords = customLabel.split(/\s+/);
+      for (const word of fieldWords) {
+        if (customWords.some(cw => cw.includes(word) || word.includes(cw))) score += 50;
+      }
+    }
+    
+    // Document type keyword match
     const matchedType = matchDocumentTypeFromLabel(lowerLabel);
     if (matchedType && doc.documentType === matchedType) score += 100;
     
     // Label contains doc type
     if (lowerLabel.includes(docType)) score += 50;
-    if (docLabel && lowerLabel.includes(docLabel)) score += 50;
+    if (origLabel && lowerLabel.includes(origLabel)) score += 40;
     
     // Keyword overlap
-    const labelWords = lowerLabel.split(/\s+/);
-    for (const word of labelWords) {
-      if (word.length > 3) {
-        if (docType.includes(word)) score += 20;
-        if (docLabel.includes(word)) score += 20;
-      }
+    for (const word of fieldWords) {
+      if (docType.includes(word)) score += 20;
+      if (origLabel.includes(word)) score += 15;
     }
     
     // Recency bonus

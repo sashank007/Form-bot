@@ -3,6 +3,8 @@
  */
 
 import { encrypt, decrypt, getDeviceKey } from './encryption';
+import { refreshProfilesFromCloud } from './storage';
+import { getSubmittedDocuments } from './documentStorage';
 
 const STORAGE_KEY = 'formbot_user_auth';
 
@@ -85,7 +87,18 @@ export async function signInWithGoogle(): Promise<UserAuth> {
       }
     } catch (error) {
       console.error('Failed to register with backend:', error);
-      // Don't fail sign-in if backend registration fails
+    }
+    
+    // Auto-sync all data from cloud after sign-in
+    console.log('📥 Syncing all data from cloud...');
+    try {
+      const [profiles, documents] = await Promise.all([
+        refreshProfilesFromCloud(),
+        getSubmittedDocuments(auth.userId),
+      ]);
+      console.log(`✅ Synced ${profiles.length} profiles, ${documents.length} documents from cloud`);
+    } catch (syncError) {
+      console.warn('⚠️ Cloud sync failed (data will sync on next access):', syncError);
     }
     
     return auth;

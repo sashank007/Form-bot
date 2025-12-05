@@ -32,6 +32,7 @@ let formObserver: MutationObserver | null = null;
 let formMonitorCleanup: (() => void) | null = null;
 let saveTemplateNotificationShown = false;
 let isMatching = false;
+let isFilling = false;
 
 /**
  * Initialize content script
@@ -45,14 +46,21 @@ function init() {
   // Set up observer for dynamic forms
   let debounceTimer: number;
   formObserver = observeFormChanges(() => {
+    // Don't re-detect while filling (causes unnecessary AI calls)
+    if (isFilling || isMatching) return;
+    
     clearTimeout(debounceTimer);
     debounceTimer = window.setTimeout(() => {
-      detectAndNotify();
+      if (!isFilling && !isMatching) {
+        detectAndNotify();
+      }
     }, 500);
   });
   
   // Listen for profile changes and re-run matching
   onProfileChange(() => {
+    // Don't re-match while filling
+    if (isFilling) return;
     console.log('🔄 [PROFILE] Profile changed - re-running form detection');
     detectAndNotify();
   });
@@ -100,7 +108,7 @@ async function detectAndNotify() {
     }
     
     try {
-      const batchResults = await batchMatchAllFields(fields, savedData);
+      const batchResults = await batchMatchAllFields(fields, savedData, window.location.href);
       
       // Convert batch results to DetectedField format
       detectedFields = fields.map((field, index) => {
@@ -122,6 +130,8 @@ async function detectAndNotify() {
             fieldType,
             confidence: batchMatch.confidence,
             matchedKey: batchMatch.matchedKey,
+            reasoning: batchMatch.reasoning,
+            matchFactors: batchMatch.matchFactors,
             possibleMatches: batchMatch.possibleMatches,
           };
         }
@@ -132,6 +142,8 @@ async function detectAndNotify() {
           fieldType,
           confidence: batchMatch?.confidence || typeConfidence || 0,
           matchedKey: batchMatch?.matchedKey,
+          reasoning: batchMatch?.reasoning,
+          matchFactors: batchMatch?.matchFactors,
         };
       });
       
@@ -346,6 +358,9 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
   console.log('Content: fillForm called with options:', options);
   console.log('Content: detectedFields count:', detectedFields.length);
   
+  // Prevent re-detection during fill
+  isFilling = true;
+  
   const settings = await getSettings();
   const minConfidence = options.minConfidence ?? settings.minConfidence;
   const shouldHighlight = options.highlight ?? settings.highlightFields;
@@ -398,12 +413,15 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
   
   console.log('Content: Starting to fill fields...');
   
-  // Show progress indicator
-  const totalToFill = detectedFields.filter(df => 
-    df.confidence >= minConfidence && 
-    df.matchedKey && 
-    df.fieldType !== 'password'
-  ).length;
+  // Calculate actual fillable fields (have matched key AND have data value)
+  const fillableFields = detectedFields.filter(df => {
+    if (df.confidence < minConfidence) return false;
+    if (df.fieldType === 'password') return false;
+    if (!df.matchedKey) return false;
+    const value = getFillValue(df.field, df.fieldType, df.matchedKey, mergedData);
+    return !!value;
+  });
+  const totalToFill = fillableFields.length;
   
   showProgressIndicator(0, totalToFill);
   
@@ -495,6 +513,19 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
       const fullDateFieldIndex = detectedFields.findIndex(df => df.field === dateGroup.fullDateField);
       if (fullDateFieldIndex >= 0) {
         processedDateFields.add(fullDateFieldIndex);
+        
+        // Actually fill the date input field
+        const element = dateGroup.fullDateField.element as HTMLInputElement;
+        const formattedDate = `${parsed.year}-${parsed.monthNumber}-${parsed.day}`;
+        
+        console.log(`📅 [DATE] Filling date input with: ${formattedDate}`);
+        fillFieldWithEvents(element, formattedDate);
+        filledCount++;
+        
+        if (shouldHighlight) {
+          highlightField(element, 'success');
+          setTimeout(() => removeHighlight(element), 2000);
+        }
       }
     }
   }
@@ -579,6 +610,9 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
   
   // Save state for undo
   await saveLastFill(previousValues);
+  
+  // Re-enable detection after fill is complete
+  setTimeout(() => { isFilling = false; }, 1000);
 }
 
 /**
@@ -731,7 +765,7 @@ async function rematchWithProfile(profileId: string) {
   if (settings.openAIEnabled && settings.openAIKey && fields.length > 0) {
     console.log(`🤖 [REMATCH] Batch AI matching for profile "${profile.name}"`);
     try {
-      const batchResults = await batchMatchAllFields(fields, savedData);
+      const batchResults = await batchMatchAllFields(fields, savedData, window.location.href);
       
       detectedFields = fields.map((field, index) => {
         const batchMatch = batchResults.get(index);
@@ -745,6 +779,8 @@ async function rematchWithProfile(profileId: string) {
             fieldType,
             confidence: batchMatch.confidence,
             matchedKey: batchMatch.matchedKey,
+            reasoning: batchMatch.reasoning,
+            matchFactors: batchMatch.matchFactors,
             possibleMatches: batchMatch.possibleMatches,
           };
         }
@@ -754,6 +790,8 @@ async function rematchWithProfile(profileId: string) {
           fieldType,
           confidence: batchMatch?.confidence || typeConfidence || 0,
           matchedKey: batchMatch?.matchedKey,
+          reasoning: batchMatch?.reasoning,
+          matchFactors: batchMatch?.matchFactors,
         };
       });
       
@@ -1602,10 +1640,18 @@ function showProgressIndicator(current: number, total: number) {
     document.body.appendChild(indicator);
   }
   
+  // Progress bar percentage
+  const percent = total > 0 ? Math.round((current / total) * 100) : 0;
+  
   indicator.innerHTML = `
-    <div style="display: flex; align-items: center; gap: 8px;">
-      <div style="width: 20px; height: 20px; border: 2px solid white; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
-      <span>Filling ${current}/${total} fields...</span>
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <div style="width: 22px; height: 22px; border: 2.5px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.7s linear infinite;"></div>
+        <span style="font-size: 15px;">Filling ${current}/${total} fields...</span>
+      </div>
+      <div style="height: 4px; background: rgba(255,255,255,0.2); border-radius: 2px; overflow: hidden;">
+        <div style="height: 100%; width: ${percent}%; background: white; border-radius: 2px; transition: width 0.2s ease-out;"></div>
+      </div>
     </div>
   `;
   
@@ -1623,18 +1669,69 @@ function updateProgressIndicator(current: number, total: number) {
   const indicator = document.getElementById('formbot-progress-indicator');
   if (!indicator) return;
   
+  // Collect field categories for breakdown
+  const categories = collectFilledFieldCategories();
+  
   indicator.innerHTML = `
-    <div style="display: flex; align-items: center; gap: 8px;">
-      <svg style="width: 20px; height: 20px;" fill="none" stroke="white" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
-      </svg>
-      <span>Filled ${current}/${total} fields ✓</span>
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <svg style="width: 24px; height: 24px; flex-shrink: 0;" fill="none" stroke="white" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <span style="font-size: 15px; font-weight: 600;">${current} Field${current !== 1 ? 's' : ''} Filled</span>
+      </div>
+      ${categories.length > 0 ? `
+        <div style="display: flex; flex-direction: column; gap: 4px; padding-left: 34px; font-size: 12px; opacity: 0.9;">
+          ${categories.map(cat => `
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 10px;">•</span>
+              <span>${cat.count} ${cat.label}</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
     </div>
   `;
   
-  if (current === total) {
-    indicator.style.background = 'linear-gradient(135deg, #10B981 0%, #059669 100%)';
+  indicator.style.background = 'linear-gradient(135deg, #10B981 0%, #059669 100%)';
+  indicator.style.minWidth = '200px';
+}
+
+/**
+ * Collect categories of filled fields for the success breakdown
+ */
+function collectFilledFieldCategories(): Array<{ label: string; count: number }> {
+  const categories: { [key: string]: number } = {};
+  
+  // Categorize by field type
+  for (const field of detectedFields) {
+    if (!field.matchedKey) continue;
+    
+    const key = field.matchedKey.toLowerCase();
+    let category = 'Other fields';
+    
+    if (key.includes('name') || key.includes('first') || key.includes('last')) {
+      category = 'Personal info';
+    } else if (key.includes('email') || key.includes('phone') || key.includes('tel')) {
+      category = 'Contact info';
+    } else if (key.includes('address') || key.includes('city') || key.includes('state') || key.includes('zip') || key.includes('country')) {
+      category = 'Address fields';
+    } else if (key.includes('company') || key.includes('job') || key.includes('title') || key.includes('work')) {
+      category = 'Professional info';
+    } else if (key.includes('date') || key.includes('birth') || key.includes('dob')) {
+      category = 'Date fields';
+    } else if (key.includes('education') || key.includes('degree') || key.includes('school') || key.includes('university')) {
+      category = 'Education info';
+    }
+    
+    categories[category] = (categories[category] || 0) + 1;
   }
+  
+  // Convert to array and sort by count
+  return Object.entries(categories)
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 4); // Max 4 categories
 }
 
 /**

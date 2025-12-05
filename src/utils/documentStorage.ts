@@ -89,6 +89,29 @@ export async function deleteSubmittedDocument(documentId: string): Promise<void>
   }
 }
 
+export async function updateDocumentLabel(documentId: string, customLabel: string): Promise<void> {
+  const localDocs = await getSubmittedDocumentsLocal();
+  const docIndex = localDocs.findIndex(d => d.id === documentId);
+  
+  if (docIndex === -1) return;
+  
+  localDocs[docIndex].customLabel = customLabel;
+  await chrome.storage.local.set({ [STORAGE_KEY]: localDocs });
+
+  const auth = await getAuth();
+  if (auth) {
+    try {
+      await fetch(`${LAMBDA_API_URL}/api/documents/${documentId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customLabel }),
+      });
+    } catch (error) {
+      console.warn('Failed to update document label in cloud:', error);
+    }
+  }
+}
+
 export function inferDocumentTypeFromFile(file: File, fieldLabel: string = ''): string {
   const fileName = file.name.toLowerCase();
   const label = fieldLabel.toLowerCase();

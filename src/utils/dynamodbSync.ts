@@ -288,6 +288,22 @@ export async function pushAllProfilesToCloud(config: DynamoDBConfig = {}): Promi
 }
 
 /**
+ * Delete a profile from DynamoDB
+ */
+export async function deleteProfileFromCloud(profileId: string): Promise<void> {
+  const auth = await getAuth();
+  if (!auth) return;
+
+  try {
+    const apiUrl = `${LAMBDA_API_URL}/api/profiles/${profileId}?userId=${encodeURIComponent(auth.userId)}`;
+    await fetch(apiUrl, { method: 'DELETE' });
+    console.log(`✅ Profile deleted from cloud: ${profileId}`);
+  } catch (error) {
+    console.warn('Failed to delete profile from cloud:', error);
+  }
+}
+
+/**
  * Reset sync timestamp (force full resync)
  */
 export function resetSyncTimestamp(): void {

@@ -418,7 +418,13 @@ const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence, select
                   )}
                 </div>
                 <div className="ml-2">
-                  {hasMatch && <ConfidenceBadge confidence={field.confidence} />}
+                  {hasMatch && (
+                    <ConfidenceBadge 
+                      confidence={field.confidence}
+                      reasoning={field.reasoning}
+                      matchFactors={field.matchFactors}
+                    />
+                  )}
                 </div>
               </div>
               {willFill && (

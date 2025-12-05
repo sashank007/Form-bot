@@ -190,8 +190,9 @@ const DocumentScanner: React.FC<DocumentScannerProps> = ({ settings }) => {
             fileName: file.name,
             fileType: file.type,
             fileSize: file.size,
-            documentType: documentType === 'other' && customDocumentLabel.trim() ? customDocumentLabel.trim() : documentType,
-            formUrl: '', // Scanned, not from a form
+            documentType: documentType,
+            customLabel: customDocumentLabel.trim() || undefined,
+            formUrl: '',
             formFieldName: 'scanner',
             formFieldLabel: 'Document Scanner',
             submittedAt: Date.now(),

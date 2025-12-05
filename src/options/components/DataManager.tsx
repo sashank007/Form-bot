@@ -5,42 +5,45 @@
 import React, { useEffect, useState } from 'react';
 import { SavedFormData, FormData, ProfileType } from '../../types';
 import { getAllFormData, saveFormData, deleteFormData, exportData, importData } from '../../utils/storage';
-import { PROFILE_TEMPLATES, createProfileFromTemplate } from '../../utils/profileTemplates';
+import { PROFILE_TEMPLATES, createProfileFromTemplate, ProfileTemplate } from '../../utils/profileTemplates';
+import { getAuth, UserAuth } from '../../utils/googleAuth';
+import UnifiedProfile from './UnifiedProfile';
 
 const DataManager: React.FC = () => {
   const [profiles, setProfiles] = useState<SavedFormData[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingData, setEditingData] = useState<FormData>({});
-  const [editingName, setEditingName] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
+  const [editingName, setEditingName] = useState('');
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [newFieldKey, setNewFieldKey] = useState('');
   const [newFieldValue, setNewFieldValue] = useState('');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
+  const [userAuth, setUserAuth] = useState<UserAuth | null>(null);
 
   useEffect(() => {
     let isMounted = true;
     
-    const loadProfilesSafe = async () => {
+    const loadData = async () => {
       try {
-        const profiles = await getAllFormData();
+        const [auth, profiles] = await Promise.all([getAuth(), getAllFormData()]);
         if (isMounted) {
+          setUserAuth(auth);
           setProfiles(profiles);
         }
       } catch (error) {
         if (isMounted) {
-          console.error('Failed to load profiles:', error);
+          console.error('Failed to load data:', error);
         }
       }
     };
     
-    loadProfilesSafe();
+    loadData();
     
-    // Listen for storage changes to refresh when new profiles are added/updated
     const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }) => {
       if (changes.formbot_data && isMounted) {
         console.log('📥 Profile data changed, refreshing...');
-        loadProfilesSafe();
+        loadData();
       }
     };
     
@@ -55,6 +58,31 @@ const DataManager: React.FC = () => {
   const loadProfiles = async () => {
     const data = await getAllFormData();
     setProfiles(data);
+  };
+
+  const getUnifiedProfile = (): SavedFormData => {
+    const existing = profiles.find(p => p.id === 'unified_profile' || p.name === 'My Profile');
+    if (existing) return existing;
+    return {
+      id: 'unified_profile',
+      name: 'My Profile',
+      data: {},
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+  };
+
+  const handleUnifiedProfileSave = async (data: FormData) => {
+    const profile: SavedFormData = {
+      id: 'unified_profile',
+      name: userAuth?.name ? `${userAuth.name}'s Profile` : 'My Profile',
+      data,
+      profileType: 'user',
+      createdAt: getUnifiedProfile().createdAt,
+      updatedAt: Date.now(),
+    };
+    await saveFormData(profile);
+    loadProfiles();
   };
 
   const handleEdit = (profile: SavedFormData) => {
@@ -133,7 +161,6 @@ const DataManager: React.FC = () => {
     setEditingName('New Profile');
     setEditingData({});
     setShowTemplateSelector(false);
-    setShowAddForm(true);
   };
 
   const handleExport = async () => {
@@ -240,11 +267,15 @@ const DataManager: React.FC = () => {
     );
   };
 
+  const legacyProfiles = profiles.filter(p => p.id !== 'unified_profile');
+
   return (
     <div className="space-y-6">
-      {/* Header Actions */}
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Form Data Profiles</h2>
+      {/* Header - Single Profile Mode */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+          My Profile
+        </h2>
         <div className="flex gap-3">
           <label className="btn-secondary cursor-pointer">
             <svg className="w-4 h-4 inline-block mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -259,14 +290,50 @@ const DataManager: React.FC = () => {
             </svg>
             Export
           </button>
-          <button onClick={handleAddNew} className="btn-primary">
-            <svg className="w-4 h-4 inline-block mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            Add Profile
-          </button>
         </div>
       </div>
+
+      {/* Legacy Profiles Banner - Show if there are old profiles to clean up */}
+      {legacyProfiles.length > 0 && (
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
+          <div className="flex items-start gap-3">
+            <span className="text-2xl">🧹</span>
+            <div className="flex-1">
+              <h3 className="font-semibold text-amber-900 dark:text-amber-100">
+                {legacyProfiles.length} old profile{legacyProfiles.length > 1 ? 's' : ''} found
+              </h3>
+              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
+                You have legacy profiles that are no longer used. Your data is now stored in a single unified profile linked to your Google account.
+              </p>
+              <div className="flex gap-2 mt-3">
+                {legacyProfiles.map(p => (
+                  <span key={p.id} className="inline-flex items-center gap-1 px-2 py-1 bg-amber-100 dark:bg-amber-800/50 rounded text-xs text-amber-800 dark:text-amber-200">
+                    {p.name}
+                    <button 
+                      onClick={() => handleDelete(p.id)}
+                      className="ml-1 hover:text-red-600 dark:hover:text-red-400"
+                      title="Delete this profile"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unified Profile View - Always shown */}
+      <UnifiedProfile
+        profileData={getUnifiedProfile().data}
+        onSave={handleUnifiedProfileSave}
+        userAuth={userAuth}
+      />
+
+      {/* Legacy profile editing (hidden by default, shown when editing old profiles) */}
+      {editingId && editingId !== 'unified_profile' && (
+        <>
 
       {/* Template Selector */}
       {showTemplateSelector && (
@@ -277,7 +344,7 @@ const DataManager: React.FC = () => {
           </p>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-            {PROFILE_TEMPLATES.map(template => (
+            {PROFILE_TEMPLATES.map((template: ProfileTemplate) => (
               <button
                 key={template.id}
                 onClick={() => handleSelectTemplate(template.id)}
@@ -471,80 +538,8 @@ const DataManager: React.FC = () => {
         </div>
       )}
 
-      {/* Profiles List */}
-      <div className="space-y-4">
-        {profiles.length === 0 && !editingId && (
-          <div className="text-center py-12 bg-white dark:bg-gray-800 rounded-card">
-            <svg className="w-16 h-16 mx-auto text-gray-400 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            <h3 className="mt-4 text-lg font-medium text-gray-900 dark:text-gray-100">No profiles yet</h3>
-            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">Create your first profile to start auto-filling forms</p>
-          </div>
-        )}
-
-        {profiles.map(profile => (
-          editingId === profile.id ? null : (
-            <div key={profile.id} className="bg-white dark:bg-gray-800 rounded-card shadow p-6 hover:shadow-lg transition-shadow">
-              <div className="flex justify-between items-start">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">{profile.name}</h3>
-                    {getProfileTypeBadge(profile.profileType)}
-                  </div>
-                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                    Last updated: {new Date(profile.updatedAt).toLocaleDateString()}
-                    {profile.profileType === 'google-sheets' && profile.sourceId && (
-                      <span className="ml-2 text-xs">• Auto-synced</span>
-                    )}
-                  </p>
-                  <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
-                    {Object.entries(profile.data).slice(0, 6).map(([key, value]) => {
-                      // Convert value to string safely - handle objects, arrays, null, undefined
-                      let displayValue: string;
-                      if (value === null || value === undefined) {
-                        return null;
-                      } else if (typeof value === 'object') {
-                        // If it's an object or array, stringify it
-                        displayValue = JSON.stringify(value);
-                      } else {
-                        displayValue = String(value);
-                      }
-                      
-                      return (
-                        <div key={key}>
-                          <span className="text-gray-600 dark:text-gray-400">{key}:</span>
-                          <span className="ml-1 text-gray-900 dark:text-gray-100">{displayValue}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-                <div className="flex gap-2 ml-4">
-                  <button
-                    onClick={() => handleEdit(profile)}
-                    className="p-2 text-primary-purple hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-lg transition-colors"
-                    title="Edit"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => handleDelete(profile.id)}
-                    className="p-2 text-danger hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
-                    title="Delete"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            </div>
-          )
-        ))}
-      </div>
+            </>
+      )}
     </div>
   );
 };
