@@ -312,7 +312,7 @@ export async function createInlineButton(detectedField: DetectedField, index: nu
   button.title = `Fill with saved data (${detectedField.confidence}% confidence)${fillValuePreview}`;
   
   // Add beaver icon
-  const beaverIconUrl = chrome.runtime.getURL('icons/formbot_head.png');
+  const beaverIconUrl = chrome.runtime.getURL('icons/icon48.png');
   button.innerHTML = `
     <img src="${beaverIconUrl}" alt="Fill" style="width: 36px; height: 36px; object-fit: contain; display: block;" />
   `;
@@ -797,7 +797,8 @@ async function createDocumentPickerButton(
     e.preventDefault();
     
     try {
-      const documents = await getSuggestedDocuments(fileInput);
+      const fieldLabel = detectedField.field.label || fileInput.name || fileInput.getAttribute('aria-label') || 'document';
+      const documents = await getSuggestedDocuments(fieldLabel);
       
       if (documents.length === 0) {
         alert('No matching documents found. Submit a form with a file upload first.');
@@ -805,15 +806,15 @@ async function createDocumentPickerButton(
       }
       
       if (documents.length === 1) {
-        await fillFileUploadField(fileInput, documents[0]);
-        showFillSuccess(button);
+        const success = await fillFileUploadField(fileInput, documents[0]);
+        if (success) showFillSuccess(button);
         return;
       }
       
       const selected = await showDocumentPicker(documents);
       if (selected) {
-        await fillFileUploadField(fileInput, selected);
-        showFillSuccess(button);
+        const success = await fillFileUploadField(fileInput, selected);
+        if (success) showFillSuccess(button);
       }
     } catch (error) {
       console.error('Failed to fill file upload:', error);

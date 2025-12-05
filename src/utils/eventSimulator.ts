@@ -40,6 +40,58 @@ export function simulateTyping(
 }
 
 /**
+ * Convert various date formats to YYYY-MM-DD for HTML date inputs
+ */
+function formatDateForInput(value: string): string {
+  if (!value) return '';
+  
+  // Already in YYYY-MM-DD format
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  
+  // Try parsing common date formats
+  const formats = [
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/,  // MM/DD/YYYY or DD/MM/YYYY
+    /^(\d{1,2})-(\d{1,2})-(\d{4})$/,     // MM-DD-YYYY or DD-MM-YYYY
+    /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/,   // YYYY/MM/DD
+    /^(\d{4})\.(\d{1,2})\.(\d{1,2})$/,   // YYYY.MM.DD
+  ];
+  
+  for (const regex of formats) {
+    const match = value.match(regex);
+    if (match) {
+      let year: string, month: string, day: string;
+      
+      if (match[1].length === 4) {
+        // YYYY/MM/DD or YYYY.MM.DD format
+        year = match[1];
+        month = match[2].padStart(2, '0');
+        day = match[3].padStart(2, '0');
+      } else if (match[3].length === 4) {
+        // Assume MM/DD/YYYY (US format) - most common
+        year = match[3];
+        month = match[1].padStart(2, '0');
+        day = match[2].padStart(2, '0');
+      } else {
+        continue;
+      }
+      
+      return `${year}-${month}-${day}`;
+    }
+  }
+  
+  // Try parsing with Date object as fallback
+  const date = new Date(value);
+  if (!isNaN(date.getTime())) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  
+  return value;
+}
+
+/**
  * Simulate typing for input/textarea elements
  */
 function simulateInputTyping(
@@ -48,6 +100,46 @@ function simulateInputTyping(
 ): void {
   // Store original value for comparison
   const originalValue = element.value;
+  
+  // Handle date/time inputs specially
+  const inputType = (element as HTMLInputElement).type?.toLowerCase();
+  if (inputType === 'date' || inputType === 'datetime-local' || inputType === 'month') {
+    let formattedValue = value;
+    
+    if (inputType === 'date') {
+      formattedValue = formatDateForInput(value);
+    } else if (inputType === 'datetime-local') {
+      const dateStr = formatDateForInput(value);
+      formattedValue = dateStr ? `${dateStr}T00:00` : value;
+    } else if (inputType === 'month') {
+      const dateStr = formatDateForInput(value);
+      formattedValue = dateStr ? dateStr.substring(0, 7) : value; // YYYY-MM
+    }
+    
+    console.log('Event Simulator: Formatting', inputType, 'input:', value, '->', formattedValue);
+    
+    element.value = formattedValue;
+    
+    // For date inputs, also try valueAsDate for better compatibility
+    if (inputType === 'date') {
+      try {
+        const dateObj = new Date(formattedValue + 'T00:00:00');
+        if (!isNaN(dateObj.getTime())) {
+          (element as HTMLInputElement).valueAsDate = dateObj;
+        }
+      } catch (e) {
+        console.log('Event Simulator: valueAsDate failed, using string value');
+      }
+    }
+    
+    // Trigger events
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    element.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+    
+    console.log('Event Simulator:', inputType, 'input filled:', element.value);
+    return;
+  }
 
   // Clear existing value first
   element.value = '';
@@ -149,34 +241,73 @@ function simulateContentEditableTyping(element: HTMLElement, value: string): voi
  */
 function simulateSelectChange(element: HTMLSelectElement, value: string): void {
   const options = Array.from(element.options);
-  const matchingOption = options.find(opt => 
-    opt.value === value || 
-    opt.text === value ||
-    opt.value.toLowerCase() === value.toLowerCase() ||
-    opt.text.toLowerCase() === value.toLowerCase() ||
-    opt.text.toLowerCase().includes(value.toLowerCase()) ||
-    value.toLowerCase().includes(opt.text.toLowerCase())
-  );
+  const normalizedValue = value.toLowerCase().trim();
+  
+  // Month name mappings for flexible matching
+  const monthMappings: Record<string, string[]> = {
+    'january': ['jan', '01', '1'],
+    'february': ['feb', '02', '2'],
+    'march': ['mar', '03', '3'],
+    'april': ['apr', '04', '4'],
+    'may': ['may', '05', '5'],
+    'june': ['jun', '06', '6'],
+    'july': ['jul', '07', '7'],
+    'august': ['aug', '08', '8'],
+    'september': ['sep', 'sept', '09', '9'],
+    'october': ['oct', '10'],
+    'november': ['nov', '11'],
+    'december': ['dec', '12'],
+  };
+  
+  // Find all possible matches for months
+  let searchValues = [normalizedValue];
+  for (const [month, aliases] of Object.entries(monthMappings)) {
+    if (normalizedValue === month || aliases.includes(normalizedValue)) {
+      searchValues = [month, ...aliases, normalizedValue];
+      break;
+    }
+  }
+  
+  // Try to find matching option
+  let matchingOption = options.find(opt => {
+    const optValue = opt.value.toLowerCase().trim();
+    const optText = opt.text.toLowerCase().trim();
+    
+    return searchValues.some(sv => 
+      optValue === sv || optText === sv ||
+      optValue.includes(sv) || optText.includes(sv) ||
+      sv.includes(optText)
+    );
+  });
+  
+  // If no match, try partial matching
+  if (!matchingOption) {
+    matchingOption = options.find(opt => 
+      opt.value === value || 
+      opt.text === value ||
+      opt.value.toLowerCase() === normalizedValue ||
+      opt.text.toLowerCase() === normalizedValue ||
+      opt.text.toLowerCase().includes(normalizedValue) ||
+      normalizedValue.includes(opt.text.toLowerCase())
+    );
+  }
 
   if (matchingOption) {
     element.selectedIndex = matchingOption.index;
     element.value = matchingOption.value;
     matchingOption.selected = true;
+    console.log('Event Simulator: Matched dropdown option:', matchingOption.text, 'for value:', value);
   } else {
     element.value = value;
+    console.log('Event Simulator: No exact match, setting value directly:', value);
   }
 
   element.dispatchEvent(new Event('focus', { bubbles: true }));
-  
   element.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
   element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
-  
   element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-  
   element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   element.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
-
-  console.log('Event Simulator: Select change events triggered for:', matchingOption?.text || value);
 }
 
 /**

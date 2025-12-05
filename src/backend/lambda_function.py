@@ -132,8 +132,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         elif path == '/api/batch-field-mapping' and http_method == 'POST':
             return handle_batch_field_mapping(event, context)
         
-        elif path == '/api/documents/upload' and http_method == 'POST':
-            return handle_document_upload(event, context)
+        elif path == '/api/documents/upload-url' and http_method == 'POST':
+            return handle_get_upload_url(event, context)
         
         elif path == '/api/documents' and http_method == 'POST':
             return handle_save_document(event, context)
@@ -1938,7 +1938,8 @@ IMPORTANT:
         # Log prompt size for debugging
         prompt_size = len(prompt)
         payload_size = len(json.dumps(payload))
-        print(f"🤖 [BATCH] Calling OpenAI API (timeout: 8s)...")
+        batch_timeout = 30  # 30 seconds for batch operations (more fields = more time)
+        print(f"🤖 [BATCH] Calling OpenAI API (timeout: {batch_timeout}s)...")
         print(f"📊 [BATCH] Prompt size: {prompt_size} chars, Payload size: {payload_size} bytes, Fields: {len(fields)}, Keys: {len(available_keys)}")
         print(f"📤 [BATCH] Request URL: {url}")
         
@@ -1946,7 +1947,7 @@ IMPORTANT:
         if context and hasattr(context, 'get_remaining_time_in_millis'):
             remaining_ms = context.get_remaining_time_in_millis()
             print(f"⏱️ [BATCH] Lambda remaining time: {remaining_ms}ms before OpenAI call")
-            if remaining_ms < 10000:  # Less than 10 seconds remaining
+            if remaining_ms < 35000:  # Less than 35 seconds remaining
                 print(f"⚠️ [BATCH] Low remaining time ({remaining_ms}ms), OpenAI call may timeout")
         
         ai_start_time = time.time()
@@ -1954,9 +1955,9 @@ IMPORTANT:
         try:
             # Create request with explicit timeout
             request_obj = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
-            print(f"📤 [BATCH] Request created, opening connection with timeout=8s...")
+            print(f"📤 [BATCH] Request created, opening connection with timeout={batch_timeout}s...")
             
-            with urllib.request.urlopen(request_obj, timeout=8) as response:
+            with urllib.request.urlopen(request_obj, timeout=batch_timeout) as response:
                 read_start = time.time()
                 print(f"📥 [BATCH] Connection opened, reading response...")
                 raw_response = response.read().decode('utf-8')
@@ -2084,7 +2085,7 @@ IMPORTANT:
             
             if 'timeout' in error_str or 'timed out' in error_str:
                 print(f"⏱️ [BATCH] TIMEOUT detected - OpenAI API call exceeded timeout")
-                print(f"⏱️ [BATCH] Expected timeout: 8s, Actual wait time: {ai_latency/1000:.2f}s")
+                print(f"⏱️ [BATCH] Expected timeout: {batch_timeout}s, Actual wait time: {ai_latency/1000:.2f}s")
                 if context and hasattr(context, 'get_remaining_time_in_millis'):
                     remaining_ms = context.get_remaining_time_in_millis()
                     print(f"⏱️ [BATCH] Lambda remaining time at error: {remaining_ms}ms")
@@ -2120,89 +2121,6 @@ def generate_field_signature_from_dict(field: Dict[str, Any]) -> str:
         hash_val = hash_val & hash_val
     
     return str(abs(hash_val))[:8]
-
-
-def handle_document_upload(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """
-    Upload document to S3
-    POST /api/documents/upload
-    Body: multipart/form-data with file, documentType, userId
-    """
-    try:
-        body = event.get('body', '')
-        is_base64 = event.get('isBase64Encoded', False)
-        
-        if is_base64:
-            body_bytes = base64.b64decode(body)
-        else:
-            body_bytes = body.encode('utf-8') if isinstance(body, str) else body
-        
-        headers = event.get('headers', {}) or {}
-        content_type = headers.get('content-type', headers.get('Content-Type', ''))
-        
-        user_id = None
-        file_data = None
-        file_name = None
-        document_type = 'other'
-        
-        if 'multipart/form-data' in content_type:
-            boundary = content_type.split('boundary=')[-1]
-            parts = body_bytes.split(f'--{boundary}'.encode())
-            
-            for part in parts:
-                if b'name="file"' in part:
-                    header_end = part.find(b'\r\n\r\n')
-                    if header_end > 0:
-                        file_data = part[header_end + 4:]
-                        filename_match = part.find(b'filename="')
-                        if filename_match > 0:
-                            filename_start = filename_match + 10
-                            filename_end = part.find(b'"', filename_start)
-                            file_name = part[filename_start:filename_end].decode('utf-8')
-                elif b'name="userId"' in part:
-                    header_end = part.find(b'\r\n\r\n')
-                    if header_end > 0:
-                        user_id = part[header_end + 4:].strip().decode('utf-8')
-                elif b'name="documentType"' in part:
-                    header_end = part.find(b'\r\n\r\n')
-                    if header_end > 0:
-                        document_type = part[header_end + 4:].strip().decode('utf-8')
-        
-        if not file_data:
-            return create_response(400, {'error': 'No file data provided'})
-        
-        if not user_id:
-            return create_response(400, {'error': 'userId is required'})
-        
-        if not file_name:
-            file_name = f"document_{uuid.uuid4().hex[:8]}_{int(time.time())}"
-        
-        s3_key = f"documents/{user_id}/{uuid.uuid4().hex[:8]}_{int(time.time())}_{file_name}"
-        
-        try:
-            s3_client.put_object(
-                Bucket=s3_bucket_name,
-                Key=s3_key,
-                Body=file_data,
-                ContentType='application/octet-stream'
-            )
-            
-            s3_url = f"https://{s3_bucket_name}.s3.amazonaws.com/{s3_key}"
-            
-            return create_response(200, {
-                's3Url': s3_url,
-                's3Key': s3_key,
-                'fileName': file_name
-            })
-        except Exception as s3_error:
-            print(f"❌ S3 upload error: {str(s3_error)}")
-            return create_response(500, {'error': f'S3 upload failed: {str(s3_error)}'})
-            
-    except Exception as e:
-        print(f"❌ Document upload error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return create_response(500, {'error': f'Upload failed: {str(e)}'})
 
 
 def handle_save_document(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -2297,6 +2215,49 @@ def handle_get_documents(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         return create_response(500, {'error': f'Get failed: {str(e)}'})
+
+
+def handle_get_upload_url(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Get presigned URL for document upload (PUT)
+    POST /api/documents/upload-url
+    Body: {"userId": "xxx", "fileName": "doc.pdf", "fileType": "application/pdf", "documentType": "passport"}
+    """
+    try:
+        body = json.loads(event.get('body', '{}'))
+        user_id = body.get('userId')
+        file_name = body.get('fileName', f'document_{int(time.time())}')
+        file_type = body.get('fileType', 'application/octet-stream')
+        document_type = body.get('documentType', 'other')
+        
+        if not user_id:
+            return create_response(400, {'error': 'userId is required'})
+        
+        s3_key = f"documents/{user_id}/{uuid.uuid4().hex[:8]}_{int(time.time())}_{file_name}"
+        
+        presigned_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': s3_bucket_name,
+                'Key': s3_key,
+                'ContentType': file_type
+            },
+            ExpiresIn=300
+        )
+        
+        s3_url = f"https://{s3_bucket_name}.s3.amazonaws.com/{s3_key}"
+        
+        return create_response(200, {
+            'uploadUrl': presigned_url,
+            's3Key': s3_key,
+            's3Url': s3_url
+        })
+        
+    except Exception as e:
+        print(f"❌ Upload URL error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return create_response(500, {'error': f'Upload URL failed: {str(e)}'})
 
 
 def handle_get_presigned_url(event: Dict[str, Any], context: Any) -> Dict[str, Any]:

@@ -24,8 +24,8 @@ function generateFormSignature(fields: FormField[]): string {
   return Math.abs(hash).toString(36);
 }
 
-function generateProfileSignature(profileData: FormData): string {
-  const keys = Object.keys(profileData).sort().join('|');
+function generateProfileSignature(availableKeys: string[]): string {
+  const keys = availableKeys.sort().join('|');
   let hash = 0;
   for (let i = 0; i < keys.length; i++) {
     const char = keys.charCodeAt(i);
@@ -33,6 +33,24 @@ function generateProfileSignature(profileData: FormData): string {
     hash = hash & hash;
   }
   return Math.abs(hash).toString(36);
+}
+
+function flattenProfileData(data: FormData): FormData {
+  if (data.rows && Array.isArray(data.rows) && data.rows.length > 0) {
+    const flattened: FormData = {};
+    for (const row of data.rows) {
+      if (typeof row === 'object' && row !== null) {
+        Object.assign(flattened, row);
+      }
+    }
+    for (const key in data) {
+      if (key !== 'rows' && !(key in flattened)) {
+        flattened[key] = data[key];
+      }
+    }
+    return flattened;
+  }
+  return data;
 }
 
 export async function batchMatchAllFields(
@@ -45,8 +63,17 @@ export async function batchMatchAllFields(
     return results;
   }
   
-  const availableKeys = Object.keys(profileData);
+  const flattenedData = flattenProfileData(profileData);
+  const availableKeys = Object.keys(flattenedData).filter(key => {
+    const value = flattenedData[key];
+    return value && typeof value === 'string' && value.trim() !== '';
+  });
+  
+  console.log(`📋 [BATCH] Profile data keys after flattening: ${availableKeys.length}`);
+  console.log(`📋 [BATCH] Keys: ${availableKeys.slice(0, 20).join(', ')}${availableKeys.length > 20 ? '...' : ''}`);
+  
   if (availableKeys.length === 0) {
+    console.log('⚠️ [BATCH] No profile data keys available - profile may be empty');
     fields.forEach((_, index) => {
       results.set(index, { confidence: 0 });
     });
@@ -63,9 +90,10 @@ export async function batchMatchAllFields(
   }
   
   const formSignature = generateFormSignature(fields);
-  const profileSignature = generateProfileSignature(profileData);
+  const profileSignature = generateProfileSignature(availableKeys);
   const batchCacheKey = `batch_mapping:${formSignature}:${profileSignature}`;
   
+  console.log(`🔑 [BATCH] Cache key: ${batchCacheKey}`);
   console.log(`🤖 [BATCH] Starting batch matching for ${fields.length} fields with ${availableKeys.length} profile keys`);
   console.log(`📋 [BATCH] Fields to match:`);
   fields.forEach((field, idx) => {
@@ -76,11 +104,19 @@ export async function batchMatchAllFields(
   const startTime = performance.now();
   
   try {
-    const cachedResult = await getBatchCachedMatch(batchCacheKey);
-    if (cachedResult) {
-      const latency = performance.now() - startTime;
-      console.log(`✅ [BATCH] Cache hit (latency: ${latency.toFixed(2)}ms)`);
-      return cachedResult;
+    // Skip cache for now to ensure fresh results when switching profiles
+    // TODO: Re-enable cache once profile-specific caching is verified
+    const SKIP_CACHE = true;
+    
+    if (!SKIP_CACHE) {
+      const cachedResult = await getBatchCachedMatch(batchCacheKey);
+      if (cachedResult) {
+        const latency = performance.now() - startTime;
+        console.log(`✅ [BATCH] Cache hit (latency: ${latency.toFixed(2)}ms)`);
+        return cachedResult;
+      }
+    } else {
+      console.log(`⏭️ [BATCH] Cache skipped - always calling API for fresh results`);
     }
     
     console.log(`❌ [BATCH] Cache miss, calling backend API with ${fields.length} fields...`);
@@ -136,6 +172,9 @@ async function callBatchMatchingAPI(
     openAIKey,
   };
   
+  console.log(`🔑 [BATCH] Sending ${availableKeys.length} profile keys to API:`, availableKeys);
+  console.log(`📝 [BATCH] Full request body (without API key):`, { fields: fieldsData, availableKeys, openAIKey: '***' });
+  
   try {
     const response = await fetch(apiUrl, {
       method: 'POST',
@@ -154,11 +193,15 @@ async function callBatchMatchingAPI(
     const data = await response.json();
     
     if (data.mappings && Array.isArray(data.mappings)) {
+      console.log(`📥 [BATCH] Received ${data.mappings.length} mappings from API`);
+      
       data.mappings.forEach((mapping: any) => {
         const fieldIndex = mapping.fieldIndex;
         if (typeof fieldIndex === 'number' && fieldIndex >= 0 && fieldIndex < fields.length) {
           const matchedKey = mapping.matchedKey;
           const confidence = Math.min(Math.max(mapping.confidence || 0, 0), 100);
+          
+          console.log(`📥 [BATCH] Field ${fieldIndex}: matchedKey="${matchedKey}", confidence=${confidence}, inKeys=${matchedKey ? availableKeys.includes(matchedKey) : 'N/A'}`);
           
           if (matchedKey && availableKeys.includes(matchedKey)) {
             const possibleMatches = mapping.possibleMatches || [];
@@ -167,13 +210,17 @@ async function callBatchMatchingAPI(
               confidence,
               possibleMatches: possibleMatches.length > 0 ? possibleMatches : undefined,
             });
-          } else if (confidence > 0) {
-            results.set(fieldIndex, { confidence });
+          } else if (matchedKey) {
+            console.log(`⚠️ [BATCH] Field ${fieldIndex}: Key "${matchedKey}" NOT in available keys!`);
+            console.log(`⚠️ [BATCH] Available keys: ${availableKeys.join(', ')}`);
+            results.set(fieldIndex, { confidence: 0 });
           } else {
             results.set(fieldIndex, { confidence: 0 });
           }
         }
       });
+    } else {
+      console.log('⚠️ [BATCH] No mappings in API response:', data);
     }
     
     // Ensure all fields have a result (even if no match)

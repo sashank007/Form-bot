@@ -9,9 +9,10 @@ interface QuickFillProps {
   onUndo: () => void;
   fillableCount: number;
   totalCount: number;
+  isMatching?: boolean;
 }
 
-const QuickFill: React.FC<QuickFillProps> = ({ onFill, onUndo, fillableCount, totalCount }) => {
+const QuickFill: React.FC<QuickFillProps> = ({ onFill, onUndo, fillableCount, totalCount, isMatching }) => {
   const [justFilled, setJustFilled] = useState(false);
 
   const handleFill = async () => {
@@ -24,10 +25,15 @@ const QuickFill: React.FC<QuickFillProps> = ({ onFill, onUndo, fillableCount, to
     <div className="space-y-3">
       <button
         onClick={handleFill}
-        disabled={fillableCount === 0}
-        className="w-full btn-primary py-3 text-lg font-bold shadow-lg"
+        disabled={fillableCount === 0 || isMatching}
+        className="w-full btn-primary py-3 text-lg font-bold shadow-lg disabled:opacity-60"
       >
-        {fillableCount === 0 ? (
+        {isMatching ? (
+          <div className="flex items-center justify-center gap-2">
+            <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+            <span>Matching Fields...</span>
+          </div>
+        ) : fillableCount === 0 ? (
           'No Fields to Fill'
         ) : (
           <>

@@ -16,28 +16,36 @@ export async function uploadDocumentToS3(
     throw new Error('Not signed in. Please sign in with Google first.');
   }
 
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('documentType', documentType);
-  formData.append('userId', auth.userId);
-
   try {
-    const response = await fetch(`${LAMBDA_API_URL}/api/documents/upload`, {
+    const urlResponse = await fetch(`${LAMBDA_API_URL}/api/documents/upload-url`, {
       method: 'POST',
-      body: formData,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId: auth.userId,
+        fileName: file.name,
+        fileType: file.type || 'application/octet-stream',
+        documentType
+      }),
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`Upload failed: ${errorData.error || response.statusText}`);
+    if (!urlResponse.ok) {
+      const errorData = await urlResponse.json().catch(() => ({}));
+      throw new Error(`Failed to get upload URL: ${errorData.error || urlResponse.statusText}`);
     }
 
-    const data = await response.json();
-    return {
-      s3Url: data.s3Url,
-      s3Key: data.s3Key,
-      fileName: file.name,
-    };
+    const { uploadUrl, s3Key, s3Url } = await urlResponse.json();
+
+    const uploadResponse = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+    });
+
+    if (!uploadResponse.ok) {
+      throw new Error(`S3 upload failed: ${uploadResponse.statusText}`);
+    }
+
+    return { s3Url, s3Key, fileName: file.name };
   } catch (error) {
     console.error('S3 upload error:', error);
     throw error;

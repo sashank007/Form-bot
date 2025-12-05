@@ -10,6 +10,9 @@ const DocumentHistory: React.FC = () => {
   const [filterType, setFilterType] = useState<string>('all');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<SubmittedDocument | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   useEffect(() => {
     loadDocuments();
@@ -60,7 +63,6 @@ const DocumentHistory: React.FC = () => {
       // Try to get presigned URL first
       try {
         const presignedUrl = await getS3PresignedUrl(doc.s3Key);
-        // Open in new tab
         const link = document.createElement('a');
         link.href = presignedUrl;
         link.download = doc.fileName;
@@ -70,7 +72,6 @@ const DocumentHistory: React.FC = () => {
         document.body.removeChild(link);
       } catch (presignedError) {
         console.warn('Presigned URL failed, trying direct S3 URL:', presignedError);
-        // Fallback to direct S3 URL if presigned URL fails
         if (doc.s3Url) {
           const link = document.createElement('a');
           link.href = doc.s3Url;
@@ -89,6 +90,46 @@ const DocumentHistory: React.FC = () => {
     } finally {
       setDownloadingId(null);
     }
+  };
+
+  const handlePreview = async (doc: SubmittedDocument) => {
+    if (!doc.s3Key && !doc.s3Url) {
+      alert('Document file not available for preview');
+      return;
+    }
+
+    setPreviewDoc(doc);
+    setPreviewLoading(true);
+    setPreviewUrl(null);
+
+    try {
+      if (doc.s3Key) {
+        const presignedUrl = await getS3PresignedUrl(doc.s3Key);
+        setPreviewUrl(presignedUrl);
+      } else if (doc.s3Url) {
+        setPreviewUrl(doc.s3Url);
+      }
+    } catch (error) {
+      console.error('Failed to get preview URL:', error);
+      alert('Failed to load document preview');
+      setPreviewDoc(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const closePreview = () => {
+    setPreviewDoc(null);
+    setPreviewUrl(null);
+  };
+
+  const isImageFile = (fileType: string) => {
+    return fileType.startsWith('image/') || 
+           ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].some(ext => fileType.toLowerCase().includes(ext));
+  };
+
+  const isPdfFile = (fileType: string) => {
+    return fileType === 'application/pdf' || fileType.toLowerCase().includes('pdf');
   };
 
   const filteredDocuments = filterType === 'all' 
@@ -122,10 +163,87 @@ const DocumentHistory: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {/* Preview Modal */}
+      {previewDoc && (
+        <div 
+          className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4"
+          onClick={closePreview}
+        >
+          <div 
+            className="bg-white dark:bg-gray-800 rounded-xl max-w-4xl max-h-[90vh] w-full overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                  {previewDoc.fileName}
+                </h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  {getDocumentTypeLabel(previewDoc.documentType)} • {formatFileSize(previewDoc.fileSize)}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleDownload(previewDoc)}
+                  className="px-3 py-1.5 text-sm font-medium text-white bg-primary-purple hover:bg-primary-purple/90 rounded-lg transition-colors"
+                >
+                  Download
+                </button>
+                <button
+                  onClick={closePreview}
+                  className="p-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div className="p-4 overflow-auto max-h-[calc(90vh-80px)] flex items-center justify-center bg-gray-100 dark:bg-gray-900">
+              {previewLoading ? (
+                <div className="text-center py-12">
+                  <div className="w-8 h-8 border-2 border-primary-purple border-t-transparent rounded-full animate-spin mx-auto"></div>
+                  <p className="text-gray-600 dark:text-gray-400 mt-4">Loading preview...</p>
+                </div>
+              ) : previewUrl ? (
+                isImageFile(previewDoc.fileType) ? (
+                  <img 
+                    src={previewUrl} 
+                    alt={previewDoc.fileName}
+                    className="max-w-full max-h-[70vh] object-contain rounded-lg shadow-lg"
+                  />
+                ) : isPdfFile(previewDoc.fileType) ? (
+                  <iframe 
+                    src={previewUrl}
+                    className="w-full h-[70vh] rounded-lg"
+                    title={previewDoc.fileName}
+                  />
+                ) : (
+                  <div className="text-center py-12">
+                    <svg className="w-16 h-16 mx-auto text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <p className="text-gray-600 dark:text-gray-400">Preview not available for this file type</p>
+                    <button
+                      onClick={() => handleDownload(previewDoc)}
+                      className="mt-4 px-4 py-2 text-sm font-medium text-white bg-primary-purple hover:bg-primary-purple/90 rounded-lg"
+                    >
+                      Download to View
+                    </button>
+                  </div>
+                )
+              ) : (
+                <p className="text-gray-600 dark:text-gray-400">Failed to load preview</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div>
-        <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Document History</h2>
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">My Documents</h2>
         <p className="text-gray-600 dark:text-gray-400 mt-1">
-          View and manage all documents you've submitted through forms
+          Your personal document repository - view and download anytime
         </p>
       </div>
 
@@ -139,10 +257,13 @@ const DocumentHistory: React.FC = () => {
           <svg className="w-16 h-16 mx-auto text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
           </svg>
-          <p className="text-gray-600 dark:text-gray-400">No documents submitted yet</p>
+          <p className="text-gray-600 dark:text-gray-400">No documents uploaded yet</p>
           <p className="text-sm text-gray-500 dark:text-gray-500 mt-2">
-            Documents will appear here after you submit forms with file uploads
+            Documents from form submissions and document scans will appear here
           </p>
+          <div className="mt-4 text-xs text-gray-400 dark:text-gray-500">
+            💡 Tip: Use Document Scanner tab to scan IDs, passports, and more
+          </div>
         </div>
       ) : (
         <>
@@ -212,6 +333,18 @@ const DocumentHistory: React.FC = () => {
                   </div>
 
                   <div className="flex gap-2 ml-4 flex-shrink-0">
+                    <button
+                      onClick={() => handlePreview(doc)}
+                      disabled={!doc.s3Key && !doc.s3Url}
+                      className="px-3 py-2 text-sm font-medium text-primary-purple hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 border border-purple-200 dark:border-purple-800"
+                      title="View document"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                      View
+                    </button>
                     <button
                       onClick={() => handleDownload(doc)}
                       disabled={downloadingId === doc.id || (!doc.s3Key && !doc.s3Url)}

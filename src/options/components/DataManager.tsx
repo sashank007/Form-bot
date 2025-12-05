@@ -182,16 +182,18 @@ const DataManager: React.FC = () => {
   };
 
   const commonFields = [
-    { key: 'firstName', label: 'First Name' },
-    { key: 'lastName', label: 'Last Name' },
-    { key: 'email', label: 'Email' },
-    { key: 'phone', label: 'Phone' },
-    { key: 'address', label: 'Address' },
-    { key: 'city', label: 'City' },
-    { key: 'state', label: 'State' },
-    { key: 'zipCode', label: 'Zip Code' },
-    { key: 'country', label: 'Country' },
-    { key: 'company', label: 'Company' },
+    { key: 'firstName', label: 'First Name', type: 'text' },
+    { key: 'lastName', label: 'Last Name', type: 'text' },
+    { key: 'email', label: 'Email', type: 'email' },
+    { key: 'phone', label: 'Phone', type: 'tel' },
+    { key: 'dateOfBirth', label: 'Date of Birth', type: 'date' },
+    { key: 'address', label: 'Address', type: 'text' },
+    { key: 'city', label: 'City', type: 'text' },
+    { key: 'state', label: 'State', type: 'text' },
+    { key: 'zipCode', label: 'Zip Code', type: 'text' },
+    { key: 'country', label: 'Country', type: 'text' },
+    { key: 'company', label: 'Company', type: 'text' },
+    { key: 'startDate', label: 'Start Date', type: 'date' },
   ];
 
   const commonFieldKeys = commonFields.map(f => f.key);
@@ -368,11 +370,11 @@ const DataManager: React.FC = () => {
                       {field.label}
                     </label>
                     <input
-                      type="text"
+                      type={field.type}
                       value={stringValue}
                       onChange={(e) => updateField(field.key, e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-purple focus:border-transparent"
-                      placeholder={`Enter ${field.label.toLowerCase()}`}
+                      placeholder={field.type === 'date' ? '' : `Enter ${field.label.toLowerCase()}`}
                     />
                   </div>
                 );

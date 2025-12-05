@@ -86,7 +86,7 @@ const Options: React.FC = () => {
     );
   }
 
-  const beaverIconUrl = chrome.runtime.getURL('icons/formbot_head.png');
+  const beaverIconUrl = chrome.runtime.getURL('icons/icon128.png');
 
   return (
     <div 
@@ -178,7 +178,7 @@ const Options: React.FC = () => {
                   : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
               }`}
             >
-              Document History
+              My Documents
             </button>
             <button
               onClick={() => setActiveTab('resume')}

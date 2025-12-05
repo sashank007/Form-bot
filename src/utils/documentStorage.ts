@@ -35,25 +35,31 @@ export async function saveSubmittedDocument(doc: SubmittedDocument): Promise<voi
 export async function getSubmittedDocuments(userId?: string): Promise<SubmittedDocument[]> {
   const auth = await getAuth();
   const targetUserId = userId || auth?.userId;
+  const localDocs = await getSubmittedDocumentsLocal();
 
   if (!targetUserId) {
-    return getSubmittedDocumentsLocal();
+    return localDocs;
   }
 
   try {
     const response = await fetch(`${LAMBDA_API_URL}/api/documents?userId=${encodeURIComponent(targetUserId)}`);
     if (response.ok) {
       const data = await response.json();
-      const cloudDocs = data.documents || [];
+      const cloudDocs: SubmittedDocument[] = data.documents || [];
       
-      await chrome.storage.local.set({ [STORAGE_KEY]: cloudDocs });
-      return cloudDocs;
+      // Merge: cloud docs take precedence, but keep local docs not in cloud
+      const cloudIds = new Set(cloudDocs.map(d => d.id));
+      const localOnly = localDocs.filter(d => !cloudIds.has(d.id));
+      const merged = [...cloudDocs, ...localOnly];
+      
+      await chrome.storage.local.set({ [STORAGE_KEY]: merged });
+      return merged.sort((a, b) => b.submittedAt - a.submittedAt);
     }
   } catch (error) {
     console.warn('Failed to fetch documents from cloud, using local:', error);
   }
 
-  return getSubmittedDocumentsLocal();
+  return localDocs;
 }
 
 async function getSubmittedDocumentsLocal(): Promise<SubmittedDocument[]> {
@@ -74,7 +80,7 @@ export async function deleteSubmittedDocument(documentId: string): Promise<void>
   const auth = await getAuth();
   if (auth) {
     try {
-      await fetch(`${LAMBDA_API_URL}/api/documents/${documentId}`, {
+      await fetch(`${LAMBDA_API_URL}/api/documents/${documentId}?userId=${encodeURIComponent(auth.userId)}`, {
         method: 'DELETE',
       });
     } catch (error) {

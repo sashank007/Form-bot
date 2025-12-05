@@ -9,7 +9,7 @@ Resources:
     Properties:
       PackageType: Image
       ImageUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/formbot-lambda:latest'
-      Timeout: 30
+      Timeout: 60
       MemorySize: 512
       Environment:
         Variables:
@@ -119,7 +119,7 @@ Resources:
         DocumentUpload:
           Type: Api
           Properties:
-            Path: /api/documents/upload
+            Path: /api/documents/upload-url
             Method: POST
             RestApiId: !Ref FormBotAPI
         
@@ -225,7 +225,7 @@ Resources:
   DocumentsBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub 'formbot-documents-${AWS::AccountId}'
+      BucketName: formbot-documents
       VersioningConfiguration:
         Status: Enabled
       LifecycleConfiguration:
@@ -238,6 +238,16 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - PUT
+              - GET
+            AllowedOrigins:
+              - '*'
+            MaxAge: 3600
 
 Outputs:
   ApiUrl:

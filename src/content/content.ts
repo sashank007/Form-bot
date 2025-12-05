@@ -20,6 +20,7 @@ import { analyzeField } from '../utils/fieldPurposeIdentifier';
 import { sendToZapier, extractFilledFormData } from '../utils/zapierIntegration';
 import { uploadDocumentToS3 } from '../utils/s3Upload';
 import { saveSubmittedDocument, inferDocumentTypeFromFile } from '../utils/documentStorage';
+import { findMatchingDocument, fillFileUploadField } from '../utils/documentFiller';
 import { getAuth } from '../utils/googleAuth';
 import { SubmittedDocument } from '../types';
 import { detectDateComponentGroups, parseDate, fillDateComponent } from '../utils/dateFieldHandler';
@@ -30,6 +31,7 @@ let detectedFields: DetectedField[] = [];
 let formObserver: MutationObserver | null = null;
 let formMonitorCleanup: (() => void) | null = null;
 let saveTemplateNotificationShown = false;
+let isMatching = false;
 
 /**
  * Initialize content script
@@ -71,8 +73,11 @@ async function detectAndNotify() {
   
   if (fields.length === 0) {
     detectedFields = [];
+    isMatching = false;
     return;
   }
+  
+  isMatching = true;
   
   // Get saved data and match fields
   const savedData = await getPrimaryFormData();
@@ -86,6 +91,13 @@ async function detectAndNotify() {
     fields.forEach((field, idx) => {
       console.log(`  Field ${idx}: label="${field.label || ''}", name="${field.name || ''}", type="${field.type || ''}", id="${field.id || ''}"`);
     });
+    
+    // Log profile data being used
+    const profileKeys = Object.keys(savedData);
+    console.log(`📋 [BATCH] Profile data has ${profileKeys.length} keys:`, profileKeys.slice(0, 20));
+    if (profileKeys.length === 0) {
+      console.warn('⚠️ [BATCH] WARNING: Profile data is EMPTY! No keys to match against.');
+    }
     
     try {
       const batchResults = await batchMatchAllFields(fields, savedData);
@@ -165,6 +177,8 @@ async function detectAndNotify() {
     detectedFields = await matchFields(fields, savedData);
   }
   
+  isMatching = false;
+  
   // Setup inline buttons for fields
   if (settings.autoFillEnabled) {
     await setupInlineButtons(detectedFields);
@@ -240,6 +254,7 @@ async function handleMessage(message: Message, sendResponse: (response?: any) =>
         fields: detectedFields,
         formCount: countForms(),
         url: window.location.href,
+        isMatching,
       });
       break;
       
@@ -249,6 +264,7 @@ async function handleMessage(message: Message, sendResponse: (response?: any) =>
         fields: detectedFields,
         formCount: countForms(),
         url: window.location.href,
+        isMatching,
       });
       break;
       
@@ -504,12 +520,7 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
       continue;
     }
     
-    if (!detectedField.matchedKey) {
-      console.log('Content: Skipping field with no match:', detectedField.field.label);
-      skippedCount++;
-      continue;
-    }
-    
+    // Try to get fill value - getFillValue will also check for date components
     const fillValue = getFillValue(
       detectedField.field,
       detectedField.fieldType,
@@ -518,7 +529,11 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
     );
     
     if (!fillValue) {
-      console.log('Content: No fill value for:', detectedField.matchedKey);
+      if (detectedField.matchedKey) {
+        console.log('Content: No fill value for matched key:', detectedField.matchedKey);
+      } else {
+        console.log('Content: No match and no date component for:', detectedField.field.label);
+      }
       skippedCount++;
       continue;
     }
@@ -553,6 +568,9 @@ async function fillForm(options: { minConfidence?: number; highlight?: boolean; 
     // Update progress indicator
     updateProgressIndicator(filledCount, totalToFill);
   }
+  
+  // Auto-fill file upload fields with matching documents
+  await autoFillFileUploads(shouldHighlight);
   
   console.log(`Content: Fill complete - ${filledCount} filled, ${skippedCount} skipped`);
   
@@ -589,26 +607,168 @@ async function undoFill() {
 }
 
 /**
+ * Auto-fill file upload fields with matching documents
+ */
+async function autoFillFileUploads(highlight: boolean = true) {
+  const fileInputs = document.querySelectorAll<HTMLInputElement>('input[type="file"]');
+  if (fileInputs.length === 0) return;
+  
+  console.log(`📎 Found ${fileInputs.length} file upload field(s), checking for matching documents...`);
+  
+  for (const fileInput of fileInputs) {
+    // Skip if already has files
+    if (fileInput.files && fileInput.files.length > 0) {
+      console.log(`  ⏭️ Skipping ${fileInput.name || 'file input'} - already has files`);
+      continue;
+    }
+    
+    // Get field label from various sources
+    const label = getFileInputLabel(fileInput);
+    if (!label) {
+      console.log(`  ⏭️ Skipping file input - no label found`);
+      continue;
+    }
+    
+    console.log(`  🔍 Looking for document match for: "${label}"`);
+    
+    const matchedDoc = await findMatchingDocument(label);
+    if (matchedDoc) {
+      console.log(`  ✅ Found matching document: ${matchedDoc.fileName} (${matchedDoc.documentType})`);
+      const success = await fillFileUploadField(fileInput, matchedDoc);
+      
+      if (success && highlight) {
+        highlightField(fileInput, 'success');
+        setTimeout(() => removeHighlight(fileInput), 2000);
+      }
+    } else {
+      console.log(`  ❌ No matching document found for: "${label}"`);
+    }
+  }
+}
+
+function getFileInputLabel(input: HTMLInputElement): string {
+  // Check aria-label
+  const ariaLabel = input.getAttribute('aria-label');
+  if (ariaLabel) return ariaLabel;
+  
+  // Check for explicit label
+  if (input.id) {
+    const label = document.querySelector(`label[for="${input.id}"]`);
+    if (label?.textContent) return label.textContent.trim();
+  }
+  
+  // Check parent label
+  const parentLabel = input.closest('label');
+  if (parentLabel?.textContent) return parentLabel.textContent.trim();
+  
+  // Check nearby text
+  const parent = input.parentElement;
+  if (parent) {
+    // Look for label sibling
+    const prevLabel = input.previousElementSibling;
+    if (prevLabel?.tagName === 'LABEL' || prevLabel?.tagName === 'SPAN') {
+      return prevLabel.textContent?.trim() || '';
+    }
+    
+    // Look for heading or label text nearby
+    const labelEl = parent.querySelector('label, .label, [class*="label"]');
+    if (labelEl?.textContent) return labelEl.textContent.trim();
+  }
+  
+  // Check name or placeholder
+  if (input.name) return input.name.replace(/[-_]/g, ' ');
+  if (input.placeholder) return input.placeholder;
+  
+  // Check accept attribute for hints
+  const accept = input.getAttribute('accept');
+  if (accept?.includes('image')) return 'photo document';
+  if (accept?.includes('pdf')) return 'pdf document';
+  
+  return '';
+}
+
+/**
  * Re-match fields with a different profile
  */
 async function rematchWithProfile(profileId: string) {
   if (!profileId) return;
   
+  isMatching = true;
+  
   // Get the selected profile data
   const profile = await getFormDataById(profileId);
   
-  if (!profile) return;
+  if (!profile) {
+    isMatching = false;
+    return;
+  }
   
-  const savedData = profile.data;
+  // Flatten nested data structures (e.g., Google Sheets rows format)
+  let savedData = profile.data;
+  if (savedData.rows && Array.isArray(savedData.rows) && savedData.rows.length > 0) {
+    const flattened: any = {};
+    for (const row of savedData.rows) {
+      if (typeof row === 'object' && row !== null) {
+        Object.assign(flattened, row);
+      }
+    }
+    for (const key in savedData) {
+      if (key !== 'rows' && !(key in flattened)) {
+        flattened[key] = savedData[key];
+      }
+    }
+    savedData = flattened;
+  }
+  
+  console.log(`📋 [REMATCH] Profile "${profile.name}" has ${Object.keys(savedData).length} keys:`, Object.keys(savedData).slice(0, 10));
   
   // Get current form fields
   const fields = detectFormFields();
   
-  // Re-match with new profile data
-  detectedFields = await matchFields(fields, savedData);
+  const settings = await getSettings();
+  
+  // Use batch AI matching if enabled
+  if (settings.openAIEnabled && settings.openAIKey && fields.length > 0) {
+    console.log(`🤖 [REMATCH] Batch AI matching for profile "${profile.name}"`);
+    try {
+      const batchResults = await batchMatchAllFields(fields, savedData);
+      
+      detectedFields = fields.map((field, index) => {
+        const batchMatch = batchResults.get(index);
+        const { fieldType, confidence: typeConfidence } = classifyField(
+          field.name, field.id, field.type, field.placeholder, field.label, field.ariaLabel
+        );
+        
+        if (batchMatch && batchMatch.matchedKey) {
+          return {
+            field,
+            fieldType,
+            confidence: batchMatch.confidence,
+            matchedKey: batchMatch.matchedKey,
+            possibleMatches: batchMatch.possibleMatches,
+          };
+        }
+        
+        return {
+          field,
+          fieldType,
+          confidence: batchMatch?.confidence || typeConfidence || 0,
+          matchedKey: batchMatch?.matchedKey,
+        };
+      });
+      
+      console.log(`✅ [REMATCH] Batch matching complete for "${profile.name}"`);
+    } catch (error) {
+      console.error('❌ [REMATCH] Batch matching failed, falling back:', error);
+      detectedFields = await matchFields(fields, savedData);
+    }
+  } else {
+    detectedFields = await matchFields(fields, savedData);
+  }
+  
+  isMatching = false;
   
   // Update inline buttons
-  const settings = await getSettings();
   if (settings.autoFillEnabled) {
     await setupInlineButtons(detectedFields);
   }

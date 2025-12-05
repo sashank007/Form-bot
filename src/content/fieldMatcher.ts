@@ -428,6 +428,111 @@ function flattenDataStructure(data: FormData): FormData {
 }
 
 /**
+ * Extract date component from a date string
+ */
+function extractDateComponent(dateValue: string, component: 'month' | 'day' | 'year'): string | null {
+  if (!dateValue) return null;
+  
+  let date: Date | null = null;
+  
+  // Try YYYY-MM-DD format first
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+    date = new Date(dateValue + 'T00:00:00');
+  } else {
+    // Try other common formats
+    const formats = [
+      { regex: /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, order: 'mdy' },
+      { regex: /^(\d{1,2})-(\d{1,2})-(\d{4})$/, order: 'mdy' },
+      { regex: /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/, order: 'ymd' },
+    ];
+    
+    for (const { regex, order } of formats) {
+      const match = dateValue.match(regex);
+      if (match) {
+        const parts = order === 'ymd' 
+          ? { y: parseInt(match[1]), m: parseInt(match[2]) - 1, d: parseInt(match[3]) }
+          : { m: parseInt(match[1]) - 1, d: parseInt(match[2]), y: parseInt(match[3]) };
+        date = new Date(parts.y, parts.m, parts.d);
+        break;
+      }
+    }
+    
+    // Fallback to Date parser
+    if (!date) {
+      date = new Date(dateValue);
+    }
+  }
+  
+  if (!date || isNaN(date.getTime())) return null;
+  
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                      'July', 'August', 'September', 'October', 'November', 'December'];
+  
+  switch (component) {
+    case 'month':
+      return monthNames[date.getMonth()];
+    case 'day':
+      return date.getDate().toString();
+    case 'year':
+      return date.getFullYear().toString();
+    default:
+      return null;
+  }
+}
+
+/**
+ * Detect if a field is asking for a date component
+ */
+function detectDateComponentField(field: FormField): { component: 'month' | 'day' | 'year', dateType: string } | null {
+  const label = (field.label || '').toLowerCase();
+  const name = (field.name || '').toLowerCase();
+  const id = (field.id || '').toLowerCase();
+  const placeholder = (field.placeholder || '').toLowerCase();
+  const combined = `${label} ${name} ${id} ${placeholder}`;
+  
+  // Detect what type of date (birth, start, end, etc.)
+  let dateType = 'dateOfBirth'; // Default to birth date
+  if (combined.includes('start')) dateType = 'startDate';
+  else if (combined.includes('end')) dateType = 'endDate';
+  else if (combined.includes('hire')) dateType = 'hireDate';
+  else if (combined.includes('graduation') || combined.includes('grad')) dateType = 'graduationDate';
+  else if (combined.includes('birth') || combined.includes('dob') || combined.includes('bday') || combined.includes('b.')) dateType = 'dateOfBirth';
+  
+  // Detect which component - be more flexible
+  const hasMonth = combined.includes('month') || combined.includes('mm') || combined.match(/\bmon\b/);
+  const hasYear = combined.includes('year') || combined.includes('yyyy') || combined.match(/\byy\b/);
+  const hasDay = combined.includes('day') || combined.includes('dd') || combined.match(/\bday\b/);
+  
+  // Check for standalone month field
+  if (hasMonth && !hasYear && !hasDay) {
+    return { component: 'month', dateType };
+  }
+  
+  // Check for standalone year field
+  if (hasYear && !hasMonth && !hasDay) {
+    return { component: 'year', dateType };
+  }
+  
+  // Check for standalone day field (but not "birthday" or "birthdate")
+  if (hasDay && !hasMonth && !hasYear && !combined.includes('birthday') && !combined.includes('birthdate')) {
+    return { component: 'day', dateType };
+  }
+  
+  // Also check for fields that say "Birth Month", "Birth Year", "Birth Day" explicitly
+  if (combined.match(/birth\s*month|month\s*of\s*birth|dob.*month|month.*dob/)) {
+    return { component: 'month', dateType: 'dateOfBirth' };
+  }
+  if (combined.match(/birth\s*year|year\s*of\s*birth|dob.*year|year.*dob/)) {
+    return { component: 'year', dateType: 'dateOfBirth' };
+  }
+  if (combined.match(/birth\s*day|day\s*of\s*birth|dob.*day|day.*dob/) && !combined.includes('birthday')) {
+    return { component: 'day', dateType: 'dateOfBirth' };
+  }
+  
+  return null;
+}
+
+/**
  * Get fill value for a field with smart formatting
  */
 export function getFillValue(
@@ -436,38 +541,61 @@ export function getFillValue(
   matchedKey: string | undefined,
   savedData: FormData
 ): string {
-  if (!matchedKey) {
-    return '';
-  }
-
   // Flatten nested data structures (e.g., Google Sheets rows format)
   const flattenedData = flattenDataStructure(savedData);
   
-  if (!flattenedData[matchedKey]) {
-    return '';
+  // Check if this field is asking for a date component (e.g., birth month dropdown)
+  const dateComponent = detectDateComponentField(field);
+  if (dateComponent) {
+    console.log(`📅 [FILL] Detected date component field: ${field.label || field.name} -> ${dateComponent.component} of ${dateComponent.dateType}`);
+    
+    // Look for the full date in various possible keys
+    const dateKeys = [
+      dateComponent.dateType,
+      'dateOfBirth', 'birthDate', 'dob', 'birthday', 'Date of Birth',
+      'startDate', 'endDate', 'hireDate', 'graduationDate',
+      'date_of_birth', 'birth_date'
+    ];
+    
+    for (const key of dateKeys) {
+      const value = flattenedData[key];
+      if (value) {
+        const extracted = extractDateComponent(String(value), dateComponent.component);
+        if (extracted) {
+          console.log(`📅 [FILL] Extracted ${dateComponent.component} from ${key}: ${extracted}`);
+          return extracted;
+        }
+      }
+    }
+    console.log(`📅 [FILL] Could not find date in profile. Available keys:`, Object.keys(flattenedData).slice(0, 10));
   }
-
-  let value = flattenedData[matchedKey];
   
-  // Convert to string if it's not already
-  if (typeof value !== 'string') {
-    value = String(value);
+  // If we have a matchedKey, try to get the value
+  if (matchedKey && flattenedData[matchedKey]) {
+    let value = flattenedData[matchedKey];
+    
+    // Convert to string if it's not already
+    if (typeof value !== 'string') {
+      value = String(value);
+    }
+
+    // Format based on field type
+    switch (fieldType) {
+      case 'phone':
+        value = formatPhoneNumber(value, field.placeholder);
+        break;
+      case 'zipCode':
+        value = formatZipCode(value);
+        break;
+      case 'cardNumber':
+        value = formatCardNumber(value);
+        break;
+    }
+
+    return value;
   }
 
-  // Format based on field type
-  switch (fieldType) {
-    case 'phone':
-      value = formatPhoneNumber(value, field.placeholder);
-      break;
-    case 'zipCode':
-      value = formatZipCode(value);
-      break;
-    case 'cardNumber':
-      value = formatCardNumber(value);
-      break;
-  }
-
-  return value;
+  return '';
 }
 
 /**

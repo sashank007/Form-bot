@@ -184,6 +184,7 @@ export interface FormDetectionResult {
   fields: DetectedField[];
   formCount: number;
   url: string;
+  isMatching?: boolean;
 }
 
 // OpenAI Integration

@@ -13,6 +13,7 @@ import { validateFormData } from '../utils/validator';
 const Popup: React.FC = () => {
   const [formData, setFormData] = useState<FormDetectionResult | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isMatching, setIsMatching] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [savedProfiles, setSavedProfiles] = useState<SavedFormData[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string>('');
@@ -29,13 +30,33 @@ const Popup: React.FC = () => {
     loadData();
   }, []);
 
+  useEffect(() => {
+    if (!isMatching) return;
+    
+    const pollInterval = setInterval(async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab.id) return;
+        
+        const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_FORM_DATA' });
+        if (response) {
+          setFormData(response);
+          setIsMatching(response.isMatching || false);
+        }
+      } catch (error) {
+        console.error('Polling error:', error);
+      }
+    }, 500);
+    
+    return () => clearInterval(pollInterval);
+  }, [isMatching]);
+
   // Re-match fields when profile changes
   useEffect(() => {
     if (selectedProfileId && formData) {
+      setIsMatching(true);
       rematchFields();
-      // Save selected profile for next time
       saveSelectedProfile(selectedProfileId);
-      // Re-validate with new profile
       validateProfileData(selectedProfileId);
     }
   }, [selectedProfileId]);
@@ -61,6 +82,7 @@ const Popup: React.FC = () => {
       // Get form data from content script
       const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_FORM_DATA' });
       setFormData(response);
+      setIsMatching(response?.isMatching || false);
 
       // Load settings
       const loadedSettings = await getSettings();
@@ -227,7 +249,6 @@ const Popup: React.FC = () => {
     if (!tab.id) return;
 
     try {
-      // Ask content script to re-match with the selected profile
       const response = await chrome.tabs.sendMessage(tab.id, {
         type: 'REMATCH_FIELDS',
         payload: { profileId: selectedProfileId },
@@ -235,11 +256,12 @@ const Popup: React.FC = () => {
 
       if (response) {
         setFormData(response);
-        // Re-validate with new profile after rematch
+        setIsMatching(response.isMatching || false);
         setTimeout(() => validateProfileData(selectedProfileId), 100);
       }
     } catch (error) {
       console.error('Failed to rematch fields:', error);
+      setIsMatching(false);
     }
   };
 
@@ -381,7 +403,14 @@ const Popup: React.FC = () => {
 
         {hasFields && (
           <p className="text-sm mt-3 text-white/90">
-            {fillableFields.length} field{fillableFields.length !== 1 ? 's' : ''} ready to fill
+            {isMatching ? (
+              <span className="flex items-center gap-2">
+                <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                Analyzing {formData.fields.length} field{formData.fields.length !== 1 ? 's' : ''}...
+              </span>
+            ) : (
+              `${fillableFields.length} field${fillableFields.length !== 1 ? 's' : ''} ready to fill`
+            )}
           </p>
         )}
       </div>
@@ -404,6 +433,7 @@ const Popup: React.FC = () => {
               onUndo={handleUndo}
               fillableCount={fillableFields.length}
               totalCount={formData.fields.length}
+              isMatching={isMatching}
             />
 
             {/* Form Preview */}
@@ -411,6 +441,7 @@ const Popup: React.FC = () => {
               fields={formData.fields} 
               minConfidence={settings?.minConfidence || 70}
               selectedProfileId={selectedProfileId}
+              isMatching={isMatching}
             />
 
             {/* Validation Issues Preview */}

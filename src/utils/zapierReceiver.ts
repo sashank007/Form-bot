@@ -187,7 +187,7 @@ async function processCRMData(data: any): Promise<void> {
   // Show notification
   chrome.notifications?.create({
     type: 'basic',
-    iconUrl: chrome.runtime.getURL('icons/formbot_head.png'),
+    iconUrl: chrome.runtime.getURL('icons/icon128.png'),
     title: `FormBot: ${isGoogleSheets ? 'Google Sheets' : 'CRM'} Data ${action === 'updated' ? 'Updated' : 'Received'}`,
     message: `${action === 'updated' ? 'Updated' : 'Created'} profile "${profile.name}" with ${Object.keys(flattenedData).length} fields`,
   });

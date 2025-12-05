@@ -5,25 +5,56 @@
 import React, { useState, useEffect } from 'react';
 import { DetectedField } from '../../types';
 import ConfidenceBadge from './ConfidenceBadge';
-import { getConfidenceLevel } from '../../utils/fieldClassifier';
-import { getPrimaryFormData, getFormDataById, saveFormData, getAllFormData } from '../../utils/storage';
+import { getPrimaryFormData, getFormDataById, saveFormData } from '../../utils/storage';
 
 interface FormPreviewProps {
   fields: DetectedField[];
   minConfidence: number;
   selectedProfileId?: string;
+  isMatching?: boolean;
 }
 
-const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence, selectedProfileId }) => {
+const getInputTypeLabel = (field: DetectedField): string => {
+  const tagName = field.field.element?.tagName?.toLowerCase() || '';
+  const inputType = field.field.type?.toLowerCase() || '';
+  
+  if (tagName === 'select') return '📋 Dropdown';
+  if (tagName === 'textarea') return '📝 Text Area';
+  if (inputType === 'radio') return '🔘 Radio';
+  if (inputType === 'checkbox') return '☑️ Checkbox';
+  if (inputType === 'email') return '✉️ Email Input';
+  if (inputType === 'tel' || inputType === 'phone') return '📞 Phone Input';
+  if (inputType === 'number') return '🔢 Number Input';
+  if (inputType === 'date') return '📅 Date Input';
+  if (inputType === 'file') return '📎 File Upload';
+  if (inputType === 'url') return '🔗 URL Input';
+  if (inputType === 'password') return '🔒 Password';
+  if (inputType === 'text' || tagName === 'input') return '📝 Text Input';
+  if (field.field.element?.getAttribute?.('contenteditable') === 'true') return '📝 Rich Text';
+  return '📝 Input';
+};
+
+const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence, selectedProfileId, isMatching }) => {
   const [showAll, setShowAll] = useState(false);
   const [fieldValues, setFieldValues] = useState<{ [key: string]: string }>({});
   const [formFieldValues, setFormFieldValues] = useState<{ [key: string]: string }>({});
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [addingField, setAddingField] = useState<string | null>(null);
   
-  const filteredFields = fields.filter(f => f.fieldType !== 'password');
-  const displayFields = showAll ? filteredFields : filteredFields.slice(0, 5);
-  const hasMore = filteredFields.length > 5;
+  const filteredFields = fields
+    .filter(f => f.fieldType !== 'password')
+    .sort((a, b) => {
+      const aHasMatch = a.matchedKey && a.matchedKey.trim() !== '';
+      const bHasMatch = b.matchedKey && b.matchedKey.trim() !== '';
+      if (aHasMatch && !bHasMatch) return -1;
+      if (!aHasMatch && bHasMatch) return 1;
+      return b.confidence - a.confidence;
+    });
+  const SHOW_MORE_THRESHOLD = 20;
+  const displayFields = showAll || filteredFields.length <= SHOW_MORE_THRESHOLD 
+    ? filteredFields 
+    : filteredFields.slice(0, SHOW_MORE_THRESHOLD);
+  const hasMore = filteredFields.length > SHOW_MORE_THRESHOLD;
 
   // Load field values from profile data
   useEffect(() => {
@@ -269,17 +300,51 @@ const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence, select
     }
   };
 
+  if (isMatching) {
+    return (
+      <div className="mt-4 space-y-2">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Detected Fields</h3>
+          <div className="flex items-center gap-2 text-xs text-primary-purple dark:text-primary-blue">
+            <div className="w-4 h-4 border-2 border-primary-purple dark:border-primary-blue border-t-transparent rounded-full animate-spin"></div>
+            <span>AI Matching...</span>
+          </div>
+        </div>
+        <div className="space-y-2">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="glass-card p-3 animate-pulse">
+              <div className="flex items-center justify-between">
+                <div className="flex-1">
+                  <div className="h-4 bg-gray-300 dark:bg-gray-600 rounded w-3/4 mb-2"></div>
+                  <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded w-1/2"></div>
+                </div>
+                <div className="ml-2 w-16 h-6 bg-gray-200 dark:bg-gray-700 rounded-full"></div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-center text-gray-500 dark:text-gray-400">
+          Analyzing form fields with AI...
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="mt-4 space-y-2">
       <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Detected Fields</h3>
       
       <div className="space-y-2">
         {displayFields.map((field, index) => {
-          const label = field.field.label || field.field.placeholder || field.field.name || field.field.id || 'Unnamed field';
-          const confidenceLevel = getConfidenceLevel(field.confidence);
-          const willFill = field.confidence >= minConfidence && field.matchedKey;
+          const formLabel = field.field.label || field.field.placeholder || field.field.name || field.field.id || '';
+          const hasMatch = field.matchedKey && field.matchedKey.trim() !== '';
+          const displayName = hasMatch 
+            ? field.matchedKey 
+            : (field.fieldType !== 'unknown' ? `${field.fieldType} (no profile data)` : formLabel || 'Unknown Field');
+          const inputType = getInputTypeLabel(field);
+          const willFill = field.confidence >= minConfidence && hasMatch;
           const hasValue = formFieldValues[field.field.xpath] && formFieldValues[field.field.xpath].trim();
-          const canAddToProfile = !field.matchedKey && hasValue && selectedProfileId;
+          const canAddToProfile = !hasMatch && hasValue && selectedProfileId;
           
           return (
             <div
@@ -294,18 +359,19 @@ const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence, select
               className={`glass-card p-3 transition-all duration-smooth ${
                 willFill 
                   ? 'cursor-pointer hover:bg-success/10 hover:border-success/30 border border-transparent' 
-                  : 'cursor-pointer hover:bg-white/20'
+                  : hasMatch 
+                    ? 'cursor-pointer hover:bg-white/20'
+                    : 'cursor-pointer hover:bg-red-500/10 border border-red-200 dark:border-red-900/30'
               }`}
             >
               <div className="flex items-center justify-between">
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">
-                    {label}
+                  <p className={`text-sm font-medium truncate ${hasMatch ? 'text-gray-800 dark:text-gray-200' : 'text-red-500'}`}>
+                    {displayName}
                   </p>
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    {field.fieldType !== 'unknown' ? field.fieldType : 'Unknown type'}
-                    {field.matchedKey && ` → ${field.matchedKey}`}
-                    {!field.matchedKey && <span className="text-warning ml-1">(No mapping)</span>}
+                    <span className="inline-block mr-2">{inputType}</span>
+                    {formLabel && hasMatch && <span className="opacity-70">• {formLabel}</span>}
                   </p>
                   {fieldValues[field.field.xpath] && (
                     <div className="mt-2 flex items-center gap-2">
@@ -329,7 +395,7 @@ const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence, select
                       </button>
                     </div>
                   )}
-                  {hasValue && !field.matchedKey && (
+                  {hasValue && !hasMatch && (
                     <div className="mt-2 flex items-center gap-2">
                       <p className="text-xs text-gray-600 dark:text-gray-400 font-mono bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded flex-1 truncate">
                         {formFieldValues[field.field.xpath]}
@@ -352,7 +418,7 @@ const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence, select
                   )}
                 </div>
                 <div className="ml-2">
-                  <ConfidenceBadge confidence={field.confidence} />
+                  {hasMatch && <ConfidenceBadge confidence={field.confidence} />}
                 </div>
               </div>
               {willFill && (
@@ -360,7 +426,7 @@ const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence, select
                   Click to fill this field
                 </p>
               )}
-              {!field.matchedKey && !hasValue && (
+              {!hasMatch && !hasValue && (
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
                   Fill this field in the form, then click "Add" to save it to your profile
                 </p>
@@ -375,15 +441,9 @@ const FormPreview: React.FC<FormPreviewProps> = ({ fields, minConfidence, select
           onClick={() => setShowAll(!showAll)}
           className="w-full text-xs text-center text-primary-purple dark:text-primary-blue font-medium py-2 hover:bg-white/20 dark:hover:bg-gray-700/20 rounded-lg transition-all"
         >
-          {showAll ? (
-            <>
-              ▲ Show less
-            </>
-          ) : (
-            <>
-              ▼ Show {filteredFields.length - displayFields.length} more field{filteredFields.length - displayFields.length !== 1 ? 's' : ''}
-            </>
-          )}
+          {showAll 
+            ? `▲ Show less (${SHOW_MORE_THRESHOLD})` 
+            : `▼ Show all ${filteredFields.length} fields`}
         </button>
       )}
     </div>
