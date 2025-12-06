@@ -44,34 +44,48 @@ export async function findMatchingDocument(fieldLabel: string): Promise<Submitte
   const scored = allDocs.map(doc => {
     let score = 0;
     const customLabel = (doc.customLabel || '').toLowerCase();
-    const docType = doc.documentType.toLowerCase();
+    const docType = doc.documentType.toLowerCase().replace('_', ' ');
+    const fileName = (doc.fileName || '').toLowerCase().replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
     
     // Priority 1: Custom label exact match (highest priority)
     if (customLabel && lowerLabel.includes(customLabel)) score += 200;
     if (customLabel && customLabel.includes(lowerLabel)) score += 150;
     
-    // Priority 2: Custom label word overlap
-    if (customLabel) {
-      const customWords = customLabel.split(/\s+/);
+    // Priority 2: File name match
+    if (fileName) {
+      if (lowerLabel.includes(fileName)) score += 120;
+      if (fileName.includes(lowerLabel)) score += 100;
+      const fileWords = fileName.split(/\s+/);
       for (const word of fieldWords) {
-        if (customWords.some(cw => cw.includes(word) || word.includes(cw))) {
-          score += 50;
-        }
+        if (fileWords.some(fw => fw.includes(word) || word.includes(fw))) score += 40;
       }
     }
     
-    // Priority 3: Document type keyword match
+    // Priority 3: Custom label word overlap
+    if (customLabel) {
+      const customWords = customLabel.split(/\s+/);
+      for (const word of fieldWords) {
+        if (customWords.some(cw => cw.includes(word) || word.includes(cw))) score += 50;
+      }
+    }
+    
+    // Priority 4: Document type keyword match
     const matchedType = matchDocumentTypeFromLabel(lowerLabel);
     if (matchedType && doc.documentType === matchedType) score += 100;
     
-    // Priority 4: Document type word overlap
+    // Priority 5: Document type word overlap
     for (const word of fieldWords) {
       if (docType.includes(word)) score += 30;
     }
     
-    // Priority 5: Form field label match (where doc was originally uploaded)
+    // Priority 6: Form field label match (where doc was originally uploaded)
     const origLabel = (doc.formFieldLabel || '').toLowerCase();
     if (origLabel && lowerLabel.includes(origLabel)) score += 40;
+    if (origLabel) {
+      for (const word of fieldWords) {
+        if (origLabel.includes(word)) score += 20;
+      }
+    }
     
     return { doc, score };
   });
@@ -123,8 +137,9 @@ export async function getSuggestedDocuments(fieldLabel: string): Promise<Submitt
   const scored = allDocs.map(doc => {
     let score = 0;
     const customLabel = (doc.customLabel || '').toLowerCase();
-    const docType = doc.documentType.toLowerCase();
+    const docType = doc.documentType.toLowerCase().replace('_', ' ');
     const origLabel = (doc.formFieldLabel || '').toLowerCase();
+    const fileName = (doc.fileName || '').toLowerCase().replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
     
     // Custom label matches (highest priority)
     if (customLabel) {
@@ -133,6 +148,16 @@ export async function getSuggestedDocuments(fieldLabel: string): Promise<Submitt
       const customWords = customLabel.split(/\s+/);
       for (const word of fieldWords) {
         if (customWords.some(cw => cw.includes(word) || word.includes(cw))) score += 50;
+      }
+    }
+    
+    // File name match
+    if (fileName) {
+      if (lowerLabel.includes(fileName)) score += 120;
+      if (fileName.includes(lowerLabel)) score += 100;
+      const fileWords = fileName.split(/\s+/);
+      for (const word of fieldWords) {
+        if (fileWords.some(fw => fw.includes(word) || word.includes(fw))) score += 40;
       }
     }
     

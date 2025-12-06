@@ -2,23 +2,32 @@
  * Options Page - Settings and Data Management
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import DataManager from './components/DataManager';
 import PrivacySettings from './components/PrivacySettings';
 import ResumeProfile from './components/ResumeProfile';
 import TemplateManager from './components/TemplateManager';
 import SecretsManager from './components/SecretsManager';
-import DocumentScanner from './components/DocumentScanner';
+import DocumentScanner, { ScannedDocumentData } from './components/DocumentScanner';
 import DocumentHistory from './components/DocumentHistory';
 import EnterpriseSettings from './components/EnterpriseSettings';
-import { Settings } from '../types';
-import { getSettings, saveSettings } from '../utils/storage';
+import { Settings, SavedFormData } from '../types';
+import { getSettings, saveSettings, getAllFormData, saveFormData } from '../utils/storage';
 
 const Options: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'data' | 'templates' | 'secrets' | 'scanner' | 'documents' | 'resume' | 'enterprise' | 'settings'>('data');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [darkMode, setDarkMode] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [primaryProfile, setPrimaryProfile] = useState<SavedFormData | null>(null);
+
+  const loadPrimaryProfile = useCallback(async () => {
+    const allData = await getAllFormData();
+    if (allData.length > 0) {
+      const sorted = allData.sort((a, b) => b.updatedAt - a.updatedAt);
+      setPrimaryProfile(sorted[0]);
+    }
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -29,6 +38,7 @@ const Options: React.FC = () => {
         setSettings(loadedSettings);
         setDarkMode(loadedSettings.darkMode);
       }
+      await loadPrimaryProfile();
     };
     
     load();
@@ -36,7 +46,47 @@ const Options: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [loadPrimaryProfile]);
+
+  const handleAddDocument = useCallback(async (doc: ScannedDocumentData) => {
+    let profile = primaryProfile;
+    
+    if (!profile) {
+      profile = {
+        id: `profile_${Date.now()}`,
+        name: 'My Profile',
+        data: {},
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+    }
+    
+    // Get existing scanned documents
+    const existingDocs: ScannedDocumentData[] = profile.data._scannedDocuments 
+      ? JSON.parse(profile.data._scannedDocuments) 
+      : [];
+    
+    // Add new document
+    existingDocs.push(doc);
+    
+    // Merge document fields into profile (flat for form matching)
+    const mergedData = { 
+      ...profile.data, 
+      ...doc.fields,
+      _scannedDocuments: JSON.stringify(existingDocs),
+    };
+    
+    const updatedProfile: SavedFormData = {
+      ...profile,
+      data: mergedData,
+      updatedAt: Date.now(),
+    };
+    
+    await saveFormData(updatedProfile);
+    setPrimaryProfile(updatedProfile);
+    
+    console.log(`✅ Added "${doc.label}" document card with ${Object.keys(doc.fields).length} fields`);
+  }, [primaryProfile]);
 
   useEffect(() => {
     const htmlElement = document.documentElement;
@@ -219,7 +269,12 @@ const Options: React.FC = () => {
         {activeTab === 'data' && <DataManager />}
         {activeTab === 'templates' && <TemplateManager />}
         {activeTab === 'secrets' && <SecretsManager />}
-        {activeTab === 'scanner' && <DocumentScanner settings={settings} />}
+        {activeTab === 'scanner' && (
+          <DocumentScanner 
+            settings={settings} 
+            onAddDocument={handleAddDocument}
+          />
+        )}
         {activeTab === 'documents' && <DocumentHistory />}
         {activeTab === 'resume' && <ResumeProfile settings={settings} onChange={handleSettingsChange} />}
         {activeTab === 'enterprise' && <EnterpriseSettings settings={settings} onChange={handleSettingsChange} />}

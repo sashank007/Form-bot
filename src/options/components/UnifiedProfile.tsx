@@ -114,6 +114,14 @@ const PROFILE_SECTIONS: ProfileSection[] = [
   },
 ];
 
+interface ScannedDocument {
+  type: string;
+  label: string;
+  icon: string;
+  fields: { [key: string]: string };
+  scannedAt: number;
+}
+
 interface UnifiedProfileProps {
   profileData: FormData;
   onSave: (data: FormData) => Promise<void>;
@@ -128,10 +136,25 @@ const UnifiedProfile: React.FC<UnifiedProfileProps> = ({ profileData, onSave, us
   const [customFields, setCustomFields] = useState<Array<{ key: string; value: string }>>([]);
   const [newFieldKey, setNewFieldKey] = useState('');
   const [newFieldValue, setNewFieldValue] = useState('');
+  const [scannedDocuments, setScannedDocuments] = useState<ScannedDocument[]>([]);
 
   useEffect(() => {
     setData(profileData);
-    const knownKeys = new Set(PROFILE_SECTIONS.flatMap(s => s.fields.map(f => f.key)));
+    
+    // Parse scanned documents
+    const docs: ScannedDocument[] = profileData._scannedDocuments 
+      ? JSON.parse(profileData._scannedDocuments) 
+      : [];
+    setScannedDocuments(docs);
+    
+    // Get all keys used by scanned documents
+    const scannedKeys = new Set(docs.flatMap(d => Object.keys(d.fields)));
+    
+    const knownKeys = new Set([
+      ...PROFILE_SECTIONS.flatMap(s => s.fields.map(f => f.key)),
+      ...scannedKeys,
+      '_scannedDocuments',
+    ]);
     const custom = Object.entries(profileData)
       .filter(([key]) => !knownKeys.has(key))
       .map(([key, value]) => ({ key, value: String(value || '') }));
@@ -150,6 +173,10 @@ const UnifiedProfile: React.FC<UnifiedProfileProps> = ({ profileData, onSave, us
       customFields.forEach(({ key, value }) => {
         if (key.trim()) allData[key] = value;
       });
+      // Include scanned documents metadata
+      if (scannedDocuments.length > 0) {
+        allData._scannedDocuments = JSON.stringify(scannedDocuments);
+      }
       await onSave(allData);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
@@ -183,6 +210,28 @@ const UnifiedProfile: React.FC<UnifiedProfileProps> = ({ profileData, onSave, us
     setData(prev => {
       const next = { ...prev };
       delete next[key];
+      return next;
+    });
+    setSaved(false);
+  };
+
+  const handleDocumentFieldChange = (docIndex: number, fieldKey: string, value: string) => {
+    setScannedDocuments(prev => {
+      const updated = [...prev];
+      updated[docIndex] = { ...updated[docIndex], fields: { ...updated[docIndex].fields, [fieldKey]: value } };
+      return updated;
+    });
+    setData(prev => ({ ...prev, [fieldKey]: value }));
+    setSaved(false);
+  };
+
+  const removeScannedDocument = (docIndex: number) => {
+    const docToRemove = scannedDocuments[docIndex];
+    setScannedDocuments(prev => prev.filter((_, i) => i !== docIndex));
+    setData(prev => {
+      const next = { ...prev };
+      Object.keys(docToRemove.fields).forEach(key => delete next[key]);
+      next._scannedDocuments = JSON.stringify(scannedDocuments.filter((_, i) => i !== docIndex));
       return next;
     });
     setSaved(false);
@@ -408,6 +457,91 @@ const UnifiedProfile: React.FC<UnifiedProfileProps> = ({ profileData, onSave, us
                             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-shadow"
                           />
                         )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {/* Scanned Document Cards */}
+        {scannedDocuments.map((doc, docIndex) => {
+          const isCollapsed = collapsedSections.has(`doc_${docIndex}`);
+          const fieldKeys = Object.keys(doc.fields);
+          const filledCount = fieldKeys.filter(k => doc.fields[k]?.trim()).length;
+          const progress = (filledCount / fieldKeys.length) * 100;
+          const scanDate = new Date(doc.scannedAt).toLocaleDateString();
+
+          return (
+            <div key={`doc_${docIndex}`} className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border-2 border-blue-200 dark:border-blue-800 overflow-hidden">
+              {/* Document Card Header */}
+              <div className="flex items-center">
+                <button
+                  onClick={() => toggleSection(`doc_${docIndex}`)}
+                  className="flex-1 px-5 py-4 flex items-center gap-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+                >
+                  <span className="text-2xl">{doc.icon}</span>
+                  <div className="flex-1 text-left">
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold text-gray-900 dark:text-gray-100">{doc.label}</h3>
+                      <span className="px-2 py-0.5 text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-full">
+                        Scanned
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      Scanned {scanDate} • {fieldKeys.length} fields extracted
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="text-right">
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {filledCount}/{fieldKeys.length}
+                      </span>
+                      <div className="w-20 h-1.5 bg-gray-200 dark:bg-gray-600 rounded-full overflow-hidden mt-1">
+                        <div 
+                          className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-300"
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+                    </div>
+                    <svg 
+                      className={`w-5 h-5 text-gray-400 transition-transform ${isCollapsed ? '' : 'rotate-180'}`} 
+                      fill="none" 
+                      stroke="currentColor" 
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </div>
+                </button>
+                <button
+                  onClick={() => removeScannedDocument(docIndex)}
+                  className="px-4 py-4 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                  title="Remove document"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Document Fields */}
+              {!isCollapsed && (
+                <div className="px-5 pb-5 pt-2 border-t border-blue-100 dark:border-blue-800">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {fieldKeys.map(fieldKey => (
+                      <div key={fieldKey}>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                          {fieldKey.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase())}
+                        </label>
+                        <input
+                          type="text"
+                          value={doc.fields[fieldKey] || ''}
+                          onChange={(e) => handleDocumentFieldChange(docIndex, fieldKey, e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow"
+                        />
                       </div>
                     ))}
                   </div>

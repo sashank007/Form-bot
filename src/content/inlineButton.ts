@@ -783,7 +783,121 @@ function showFillSuccess(button: HTMLButtonElement) {
 }
 
 /**
- * Remove all inline buttons and previews
+ * Create button for custom file upload (Google Forms, etc.)
+ */
+async function createCustomFileUploadButton(
+  detectedField: DetectedField,
+  index: number,
+  element: HTMLElement
+): Promise<{ button: HTMLButtonElement }> {
+  const button = document.createElement('button');
+  button.id = `${BUTTON_ID_PREFIX}${index}`;
+  button.className = BUTTON_CLASS;
+  button.innerHTML = `
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+      <polyline points="14 2 14 8 20 8"></polyline>
+      <line x1="16" y1="13" x2="8" y2="13"></line>
+      <line x1="16" y1="17" x2="8" y2="17"></line>
+    </svg>
+    <span>Suggest Doc</span>
+  `;
+  button.setAttribute('type', 'button');
+  button.setAttribute('title', 'Get document suggestion for this field');
+  
+  return { button };
+}
+
+/**
+ * Attach listeners for custom file upload button
+ */
+function attachCustomFileButtonListeners(
+  detectedField: DetectedField,
+  button: HTMLButtonElement,
+  element: HTMLElement
+) {
+  const rect = element.getBoundingClientRect();
+  
+  // Position button near the upload element
+  button.style.cssText = `
+    position: fixed;
+    top: ${rect.top + window.scrollY - 35}px;
+    left: ${rect.left + window.scrollX}px;
+    z-index: 999999;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: linear-gradient(135deg, #3B82F6 0%, #2563EB 100%);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  `;
+  
+  button.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    
+    try {
+      const fieldLabel = detectedField.field.label || element.getAttribute('aria-label') || 'document';
+      const documents = await getSuggestedDocuments(fieldLabel);
+      
+      if (documents.length === 0) {
+        alert('📎 No matching documents found.\n\nScan a document in Form Bot Settings → Document Scanner first.');
+        return;
+      }
+      
+      // Show document suggestion with download link
+      const bestMatch = documents[0];
+      const fileName = bestMatch.fileName;
+      const docType = bestMatch.customLabel || bestMatch.documentType.replace('_', ' ');
+      
+      // Try to get presigned URL for download
+      try {
+        const { getS3PresignedUrl } = await import('../utils/s3Upload');
+        const downloadUrl = await getS3PresignedUrl(bestMatch.s3Key);
+        
+        // Create a temporary download link
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = fileName;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        alert(`📎 Downloaded: ${fileName}\n\nDocument type: ${docType}\n\n1. Click "Add file" button\n2. Select the downloaded file from your Downloads folder`);
+        
+        showFillSuccess(button);
+      } catch (urlError) {
+        alert(`📎 Best match: ${fileName}\n\nDocument type: ${docType}\n\nNote: Could not download file. Please upload manually from Form Bot → My Documents.`);
+      }
+    } catch (error) {
+      console.error('Failed to suggest document:', error);
+      alert('Failed to suggest document');
+    }
+  });
+  
+  // Update position on scroll
+  const updatePosition = () => {
+    const newRect = element.getBoundingClientRect();
+    if (newRect.width > 0) {
+      button.style.top = `${newRect.top + window.scrollY - 35}px`;
+      button.style.left = `${newRect.left + window.scrollX}px`;
+    }
+  };
+  
+  window.addEventListener('scroll', updatePosition, { passive: true });
+  window.addEventListener('resize', updatePosition, { passive: true });
+}
+
+/**
+ * Create document picker button for standard file input
  */
 async function createDocumentPickerButton(
   detectedField: DetectedField,
@@ -1013,10 +1127,21 @@ export async function setupInlineButtons(detectedFields: DetectedField[]) {
     
     // Handle file upload fields differently
     if (detectedField.fieldType === 'file' || detectedField.field.type === 'file') {
-      const fileInput = detectedField.field.element as HTMLInputElement;
-      const { button } = await createDocumentPickerButton(detectedField, index, fileInput);
-      document.body.appendChild(button);
-      attachFileButtonListeners(detectedField, button, fileInput);
+      const element = detectedField.field.element;
+      const isCustomButton = element.getAttribute('role') === 'button';
+      
+      if (isCustomButton) {
+        // Google Forms custom file upload button
+        const { button } = await createCustomFileUploadButton(detectedField, index, element as HTMLElement);
+        document.body.appendChild(button);
+        attachCustomFileButtonListeners(detectedField, button, element as HTMLElement);
+      } else {
+        // Standard file input
+        const fileInput = element as HTMLInputElement;
+        const { button } = await createDocumentPickerButton(detectedField, index, fileInput);
+        document.body.appendChild(button);
+        attachFileButtonListeners(detectedField, button, fileInput);
+      }
       continue;
     }
     

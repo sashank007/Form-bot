@@ -381,6 +381,74 @@ function extractListboxFieldInfo(element: HTMLElement): FormField {
 }
 
 /**
+ * Check if element is a custom file upload button (Google Forms, etc.)
+ */
+function isCustomFileUploadButton(element: HTMLElement): boolean {
+  const ariaLabel = (element.getAttribute('aria-label') || '').toLowerCase();
+  const text = (element.textContent || '').toLowerCase();
+  
+  const fileKeywords = ['add file', 'upload file', 'attach file', 'choose file', 'select file', 'browse file'];
+  
+  for (const keyword of fileKeywords) {
+    if (ariaLabel.includes(keyword) || text.includes(keyword)) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * Extract field information from custom file upload button
+ */
+function extractFileUploadButtonInfo(element: HTMLElement): FormField {
+  let label = element.getAttribute('aria-label') || '';
+  
+  // Try to get label from aria-labelledby
+  const ariaLabelledBy = element.getAttribute('aria-labelledby');
+  if (ariaLabelledBy) {
+    const labelIds = ariaLabelledBy.split(' ');
+    const labelTexts: string[] = [];
+    for (const id of labelIds) {
+      const labelElement = document.getElementById(id);
+      if (labelElement && labelElement.textContent) {
+        labelTexts.push(labelElement.textContent.trim());
+      }
+    }
+    if (labelTexts.length > 0) {
+      label = labelTexts.join(' ');
+    }
+  }
+  
+  // Try to get question label from parent container (Google Forms)
+  if (!label || label === 'Add file') {
+    const parent = element.closest('[role="listitem"]') || 
+                   element.closest('[role="group"]') || 
+                   element.closest('.freebirdFormviewerComponentsQuestionBaseRoot');
+    if (parent) {
+      const labelElement = parent.querySelector('[role="heading"]') || 
+                          parent.querySelector('.freebirdFormviewerComponentsQuestionBaseTitle') ||
+                          parent.querySelector('[data-params]');
+      if (labelElement && labelElement.textContent) {
+        label = labelElement.textContent.trim();
+      }
+    }
+  }
+  
+  return {
+    element: element as any,
+    type: 'file',
+    name: element.getAttribute('jsname') || '',
+    id: element.id || '',
+    placeholder: '',
+    label: label,
+    ariaLabel: element.getAttribute('aria-label') || 'Add file',
+    value: '',
+    xpath: getXPath(element),
+  };
+}
+
+/**
  * Detect all form fields on the page
  */
 export function detectFormFields(): FormField[] {
@@ -396,6 +464,9 @@ export function detectFormFields(): FormField[] {
   
   // Get ARIA listboxes (Google Forms custom dropdowns)
   const listboxes = document.querySelectorAll<HTMLElement>('[role="listbox"]');
+  
+  // Get custom file upload buttons (Google Forms)
+  const fileUploadButtons = document.querySelectorAll<HTMLElement>('[role="button"][aria-label*="file" i], [role="button"][aria-label*="upload" i], [role="button"][aria-label*="Add file"]');
   
   const allElements = [...inputs, ...textareas, ...selects];
   
@@ -416,6 +487,13 @@ export function detectFormFields(): FormField[] {
   for (const element of listboxes) {
     if (shouldIncludeListbox(element)) {
       fields.push(extractListboxFieldInfo(element));
+    }
+  }
+  
+  // Process custom file upload buttons
+  for (const element of fileUploadButtons) {
+    if (isElementVisible(element) && isCustomFileUploadButton(element)) {
+      fields.push(extractFileUploadButtonInfo(element));
     }
   }
   

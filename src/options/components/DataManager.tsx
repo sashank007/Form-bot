@@ -267,8 +267,6 @@ const DataManager: React.FC = () => {
     );
   };
 
-  const legacyProfiles = profiles.filter(p => p.id !== 'unified_profile');
-
   return (
     <div className="space-y-6">
       {/* Header - Single Profile Mode */}
@@ -292,37 +290,6 @@ const DataManager: React.FC = () => {
           </button>
         </div>
       </div>
-
-      {/* Legacy Profiles Banner - Show if there are old profiles to clean up */}
-      {legacyProfiles.length > 0 && (
-        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
-          <div className="flex items-start gap-3">
-            <span className="text-2xl">🧹</span>
-            <div className="flex-1">
-              <h3 className="font-semibold text-amber-900 dark:text-amber-100">
-                {legacyProfiles.length} old profile{legacyProfiles.length > 1 ? 's' : ''} found
-              </h3>
-              <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
-                You have legacy profiles that are no longer used. Your data is now stored in a single unified profile linked to your Google account.
-              </p>
-              <div className="flex gap-2 mt-3">
-                {legacyProfiles.map(p => (
-                  <span key={p.id} className="inline-flex items-center gap-1 px-2 py-1 bg-amber-100 dark:bg-amber-800/50 rounded text-xs text-amber-800 dark:text-amber-200">
-                    {p.name}
-                    <button 
-                      onClick={() => handleDelete(p.id)}
-                      className="ml-1 hover:text-red-600 dark:hover:text-red-400"
-                      title="Delete this profile"
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Unified Profile View - Always shown */}
       <UnifiedProfile
